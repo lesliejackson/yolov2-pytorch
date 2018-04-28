@@ -114,7 +114,7 @@ def build_target(out_shape, gt, anchor_scales, threshold=0.5):
     # dtype must be np.float32(torch.floattensor) for l1_loss
     target_bbox = np.zeros((b, h, w, n, 4), dtype=np.float32)
     object_mask = np.zeros((b, h, w, n, 1), dtype=np.float32)
-    iou_mask = np.zeros((b, h, w, n), dtype=np.float32)
+    iou_mask = np.ones((b, h, w, n), dtype=np.float32)
     anchors = np.zeros((h, w, n, 4), dtype=np.float32)
 
     # dtype must be np.int64(torch.Long) for cross entropy
@@ -144,11 +144,13 @@ def build_target(out_shape, gt, anchor_scales, threshold=0.5):
 
             # an anchor with any ground_truth's iou > threshold and 
             # ignore this anchor for iou loss compute? (yes)
-            iou_mask[0][np.where(ious < threshold)] = 0.1
+            iou_mask[0][np.where((ious < threshold) & 
+                                 (iou_mask[0] != args.iou_obj_weight) &
+                                 (iou_mask[0] != 1))] = args.iou_noobj_weight
             
-            iou_mask[0][np.where((ious > threshold) & (ious == -1.0))] = 0            
+            iou_mask[0][np.where(ious > threshold)] = 0
             # 5.0 is the weight of iou loss when anchors is the best match
-            iou_mask[0, multidim_idxs[0], multidim_idxs[1], multidim_idxs[2]] = 5.0
+            iou_mask[0, multidim_idxs[0], multidim_idxs[1], multidim_idxs[2]] = args.iou_obj_weight
 
             tx, ty = gt_x-np.floor(gt_x), gt_y-np.floor(gt_y)
             tw = np.log(gt_w/anchor_scales[multidim_idxs[2]][0])
