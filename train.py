@@ -1,17 +1,14 @@
 import argparse
 import logging
 import sys
-import time
 
 import numpy as np
 from libs.data import VOCdataset
 from libs.net import Darknet_test
 from torchvision import transforms
 from torch.optim.lr_scheduler import StepLR
-from torch.autograd import Variable
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import pdb
