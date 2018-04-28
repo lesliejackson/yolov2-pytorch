@@ -44,6 +44,10 @@ parser.add_argument('--bbox_loss_weight', type=float, default=5.0,
                     help='weight of bbox loss')
 parser.add_argument('--batch_size', type=int, default=1,
                     help='batch_size must be 1')
+parser.add_argument('--iou_obj_weight', type=float, default=5.0,
+                    help='iou loss weight when anchors has gt')
+parser.add_argument('--iou_noobj_weight', type=float, default=1.0,
+                    help='iou loss weight when anchors has gt')
 
 
 logger = logging.getLogger()
@@ -146,9 +150,10 @@ def build_target(out_shape, gt, anchor_scales, threshold=0.5):
             # ignore this anchor for iou loss compute? (yes)
             iou_mask[0][np.where((ious < threshold) & 
                                  (iou_mask[0] != args.iou_obj_weight) &
-                                 (iou_mask[0] != 1))] = args.iou_noobj_weight
+                                 (iou_mask[0] != 0))] = args.iou_noobj_weight
             
-            iou_mask[0][np.where(ious > threshold)] = 0
+            iou_mask[0][np.where((ious > threshold) & 
+                                 (iou_mask[0] != args.iou_obj_weight))] = 0
             # 5.0 is the weight of iou loss when anchors is the best match
             iou_mask[0, multidim_idxs[0], multidim_idxs[1], multidim_idxs[2]] = args.iou_obj_weight
 
