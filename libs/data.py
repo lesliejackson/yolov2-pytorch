@@ -17,7 +17,7 @@ def make_dataset(usage, test_dir=None):
     if usage not in ['test', 'eval', 'train']:
         raise ValueError('unknown usage:{}'.format(usage))
     if usage == 'test':
-        if not test_dir or not os.path.isdir(test_dir) or not os.path.exist(test_dir):
+        if not test_dir or not os.path.isdir(test_dir) or not os.path.exists(test_dir):
             raise ValueError('invalid test_dir:{}'.format(test_dir))
     imgs = []
     if usage in ['train', 'eval']:
@@ -81,7 +81,7 @@ class VOCdataset(torch.utils.data.Dataset):
                 c = self.classes[obj.find('name').text]
                 gt.append([xmin, ymin, xmax, ymax, c])
             return img, torch.from_numpy(np.array(gt))
-        return img
+        return img, self.imgs[index]
 
     def __len__(self):
         return len(self.imgs)

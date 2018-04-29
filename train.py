@@ -4,7 +4,7 @@ import sys
 
 import numpy as np
 from libs.data import VOCdataset
-from libs.net import Darknet_test
+from libs.net import Darknet_19
 from torchvision import transforms
 from torch.optim.lr_scheduler import StepLR
 
@@ -29,7 +29,7 @@ parser.add_argument('--start_epoch', default=0, type=int,
                     help='manual epoch number (useful on restarts)')
 parser.add_argument('--epochs', type=int, default=25,
                     help='number of total epochs to run')
-parser.add_argument('--lr', type=float, default=100000,
+parser.add_argument('--lr', type=float, default=0.001,
                     help='base learning rate')
 parser.add_argument('--num_classes', type=int, default=20,
                     help='number of classes')
@@ -116,6 +116,7 @@ def build_target(out_shape, gt, anchor_scales, threshold=0.5):
     target_bbox = np.zeros((b, h, w, n, 4), dtype=np.float32)
     object_mask = np.zeros((b, h, w, n, 1), dtype=np.float32)
     iou_mask = np.ones((b, h, w, n), dtype=np.float32)
+    target_iou = np.zeros((b, h, w, n), dtype=np.float32)
     anchors = np.zeros((h, w, n, 4), dtype=np.float32)
 
     # dtype must be np.int64(torch.Long) for cross entropy
@@ -140,7 +141,7 @@ def build_target(out_shape, gt, anchor_scales, threshold=0.5):
         # if iou of best match < threshold we ignore it
         if ious[multidim_idxs[0], multidim_idxs[1], multidim_idxs[2]] > threshold:
             object_mask[0, multidim_idxs[0], multidim_idxs[1], multidim_idxs[2]] = 1
-        
+            target_iou[0, multidim_idxs[0], multidim_idxs[1], multidim_idxs[2]] = ious[multidim_idxs[0], multidim_idxs[1], multidim_idxs[2]]
             # 0.1 is the weight of iou loss when ious less than threshold(here is 0.5)
 
             # an anchor with any ground_truth's iou > threshold and 
@@ -160,7 +161,7 @@ def build_target(out_shape, gt, anchor_scales, threshold=0.5):
             target_bbox[0, multidim_idxs[0], multidim_idxs[1], multidim_idxs[2]] = tx, ty, tw, th
             target_class[flatten_idxs] = gt[0, i, 4]
 
-    return object_mask, target_bbox, target_class, iou_mask
+    return object_mask, target_bbox, target_class, iou_mask, target_iou
 
 
 def save_fn(state, filename='./yolov2.pth.tar'):
@@ -169,24 +170,26 @@ def save_fn(state, filename='./yolov2.pth.tar'):
 
 def train(train_loader, eval_loader, model, anchor_scales, epochs, opt):
     lr_scheduler = StepLR(opt, step_size=30, gamma=0.1)
-
+    samples = len(train_loader) 
     for epoch in range(args.start_epoch, epochs):
         lr_scheduler.step()
         model.train()
+        bbox_loss_avg, prob_loss_avg, iou_loss_avg = 0.0, 0.0, 0.0
 
         for idx, (imgs, labels) in enumerate(train_loader):
-            # imgs = imgs.cuda()
+            imgs = imgs.cuda()
             opt.zero_grad()
             with torch.enable_grad():
                 bbox_pred, iou_pred, prob_pred = model(imgs)
             
-            object_mask, target_bbox, target_class, iou_mask = \
+            object_mask, target_bbox, target_class, iou_mask, target_iou = \
                 build_target(bbox_pred.size(), labels, anchor_scales)
             # pdb.set_trace()
-            # object_mask = Variable(torch.from_numpy(object_mask))
-            # target_bbox = Variable(torch.from_numpy(target_bbox))
-            # target_class = Variable(torch.from_numpy(target_class))
-            # iou_mask = Variable(torch.from_numpy(iou_mask))
+            object_mask = torch.from_numpy(object_mask).cuda()
+            target_bbox = torch.from_numpy(target_bbox).cuda()
+            target_class = torch.from_numpy(target_class).cuda()
+            iou_mask = torch.from_numpy(iou_mask).cuda()
+            target_iou = torch.from_numpy(target_iou).cuda()
             # pdb.set_trace()
             with torch.enable_grad():
                 bbox_loss = (object_mask*F.l1_loss(bbox_pred,
@@ -196,16 +199,20 @@ def train(train_loader, eval_loader, model, anchor_scales, epochs, opt):
                                              target_class,
                                              reduce=False)*object_mask.view(-1)).sum()
                 iou_loss = (iou_mask*F.l1_loss(iou_pred,
-                                               object_mask,
+                                               target_iou,
                                                reduce=False)).sum()
                 loss = bbox_loss+prob_loss+iou_loss
             loss.backward()
             opt.step()
-
-            if idx % 10 == 0:
-                logger.info('epoch:{} step:{} bbox_loss:{:.6f} prob_loss:{:.6f} iou_loss:{:.6f}'.format(
-                    epoch, idx, bbox_loss.item(), prob_loss.item(), iou_loss.item()))
-
+            bbox_loss_avg += bbox_loss.item()
+            prob_loss_avg += prob_loss.item()
+            iou_loss_avg += iou_loss.item()
+            # if idx % 500 == 0:
+            #     logger.info('epoch:{} step:{} bbox_loss:{:.6f} prob_loss:{:.6f} iou_loss:{:.6f}'.format(
+            #         epoch, idx, bbox_loss.item(), prob_loss.item(), iou_loss.item()))
+        logger.info('epoch: {}  bbox loss: {}  probs loss: {}  iou loss: {}'.format(
+            epoch, bbox_loss_avg/samples, prob_loss_avg/samples, iou_loss_avg/samples
+        ))
         save_fn({'epoch': epoch+1,
                  'state_dict': model.state_dict(),
                  'optimizer': opt.state_dict()})
@@ -247,7 +254,8 @@ def main():
                                               pin_memory=True,
                                               drop_last=True)
 
-    darknet = Darknet_test(3, args.num_anchors, args.num_classes)
+    darknet = Darknet_19(3, args.num_anchors, args.num_classes)
+    darknet.cuda()
     optimizer = optim.SGD(darknet.parameters(),
                           lr=args.lr,
                           weight_decay=args.weight_decay)
@@ -257,7 +265,7 @@ def main():
             print("load checkpoint from '{}'".format(args.resume))
             checkpoint = torch.load(args.resume)
             args.start_epoch = checkpoint['epoch']
-            net.load_state_dict(checkpoint['state_dict'])
+            darknet.load_state_dict(checkpoint['state_dict'])
             if not args.test:
                 optimizer.load_state_dict(checkpoint['optimizer'])
             print("loaded checkpoint '{}' (epoch {})".format(

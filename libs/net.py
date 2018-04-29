@@ -30,7 +30,7 @@ class Conv2d_BN(nn.Module):
     def forward(self, x):
         x = self.conv(x)
         x = self.bn(x)
-        if self.activation:
+        if self.relu is not None:
             x = self.relu(x)
         return x
 
@@ -56,9 +56,9 @@ def block(in_channels, net_cfg):
     return nn.Sequential(*layers), in_channels
 
 
-class Darknet_test(nn.Module):
+class Darknet_19(nn.Module):
     def __init__(self, in_channels, num_anchors, num_classes):
-        super(Darknet_test, self).__init__()
+        super(Darknet_19, self).__init__()
         self.num_anchors = num_anchors
         self.num_classes = num_classes
         net_cfgs = [
