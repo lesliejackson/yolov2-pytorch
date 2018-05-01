@@ -14,13 +14,13 @@ def make_dataset(usage, test_dir=None):
     """
     get data paths
     """
-    if usage not in ['test', 'eval', 'train']:
+    if usage not in ['test', 'train']:
         raise ValueError('unknown usage:{}'.format(usage))
     if usage == 'test':
         if not test_dir or not os.path.isdir(test_dir) or not os.path.exists(test_dir):
             raise ValueError('invalid test_dir:{}'.format(test_dir))
     imgs = []
-    if usage in ['train', 'eval']:
+    if usage == 'train':
         labels = []
         for rt, dirs, files in os.walk('data/JPEGImages'):
             for file in files:
@@ -33,9 +33,7 @@ def make_dataset(usage, test_dir=None):
         assert num_samples == len(labels)
         # pdb.set_trace()
         if usage == 'train':
-            return imgs[num_samples//5:], labels[num_samples//5:]
-        else:
-            return imgs[:num_samples//5], labels[:num_samples//5]
+            return imgs, labels
     else:
         for rt, dirs, files in os.walk(test_dir):
             for file in files:

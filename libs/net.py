@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+import numpy as np
 
 class Reorg(nn.Module):
     def __init__(self, stride=2):
@@ -102,3 +102,26 @@ class Darknet_19(nn.Module):
         prob_pred = F.softmax(score_pred.view(-1, score_pred.size()[-1])).view_as(score_pred)
 
         return bbox_pred, iou_pred, prob_pred
+
+    def load_from_npz(self, fname, num_conv=None):
+        dest_src = {'conv.weight': 'kernel', 'conv.bias': 'biases',
+                    'bn.weight': 'gamma', 'bn.bias': 'biases',
+                    'bn.running_mean': 'moving_mean',
+                    'bn.running_var': 'moving_variance'}
+        params = np.load(fname)
+        own_dict = self.state_dict()
+        keys = list(own_dict.keys())
+
+        for i, start in enumerate(range(0, len(keys), 5)):
+            if num_conv is not None and i >= num_conv:
+                break
+            end = min(start+5, len(keys))
+            for key in keys[start:end]:
+                list_key = key.split('.')
+                ptype = dest_src['{}.{}'.format(list_key[-2], list_key[-1])]
+                src_key = '{}-convolutional/{}:0'.format(i, ptype)
+                print((src_key, own_dict[key].size(), params[src_key].shape))
+                param = torch.from_numpy(params[src_key])
+                if ptype == 'kernel':
+                    param = param.permute(3, 2, 0, 1)
+                own_dict[key].copy_(param)

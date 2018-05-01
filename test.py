@@ -30,7 +30,7 @@ parser.add_argument('--num_classes', type=int, default=20,
                     help='number of classes')
 parser.add_argument('--num_anchors', type=int, default=5,
                     help='number of anchors per cell')                    
-parser.add_argument('--threshold', type=float, default=0.001,
+parser.add_argument('--threshold', type=float, default=0.4,
                     help='iou threshold')
 parser.add_argument('--test_dir', type=str, help='path to test dataset')
 parser.add_argument('--batch_size', type=int, default=1,
@@ -101,7 +101,7 @@ def test(data_loader, model, anchor_scales):
             draw.rectangle((bboxs[i][0]*w, bboxs[i][1]*h, bboxs[i][2]*w, bboxs[i][3]*h))
             # pdb.set_trace()
             draw.text((bboxs[i][0]*w, bboxs[i][1]*h), reverse_cls_dict[classes[i]])
-        img.save('d:\\test_yolov2.jpg')
+        img.save('d:\\YOLOV2\\test_results\\{}.jpg'.format(os.path.basename(filename[0])))
 
 
 def main():

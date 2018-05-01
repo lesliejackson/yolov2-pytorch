@@ -6,9 +6,10 @@ import numpy as np
 from libs.data import VOCdataset
 from libs.net import Darknet_19
 from torchvision import transforms
-from torch.optim.lr_scheduler import StepLR
+from torch.optim.lr_scheduler import MultiStepLR
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import pdb
@@ -27,7 +28,7 @@ parser.add_argument('--resume', type=str, default=None,
                     help='path to latest checkpoint')
 parser.add_argument('--start_epoch', default=0, type=int,
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('--epochs', type=int, default=25,
+parser.add_argument('--epochs', type=int, default=160,
                     help='number of total epochs to run')
 parser.add_argument('--lr', type=float, default=0.001,
                     help='base learning rate')
@@ -45,6 +46,8 @@ parser.add_argument('--iou_obj_weight', type=float, default=5.0,
                     help='iou loss weight when anchors has gt')
 parser.add_argument('--iou_noobj_weight', type=float, default=1.0,
                     help='iou loss weight when anchors has gt')
+parser.add_argument('--pretrained_model', type=str, default=None,
+                    help='path to pretrained model')
 
 
 logger = logging.getLogger()
@@ -120,7 +123,7 @@ def build_target(out_shape, gt, anchor_scales, threshold=0.5):
     anchors = np.zeros((h, w, n, 4), dtype=np.float32)
 
     # dtype must be np.int64(torch.Long) for cross entropy
-    target_class = np.zeros((b*h*w*n,), dtype=np.int64)
+    target_class = np.zeros((b, h, w, n, args.num_classes), dtype=np.float32)
 
     anchors[..., 0] += np.arange(0.5, w, 1).reshape(1, w, 1)
     anchors[..., 1] += np.arange(0.5, h, 1).reshape(h, 1, 1)
@@ -148,7 +151,7 @@ def build_target(out_shape, gt, anchor_scales, threshold=0.5):
             # ignore this anchor for iou loss compute? (yes)
             iou_mask[0][np.where((ious < threshold) & 
                                  (iou_mask[0] != args.iou_obj_weight) &
-                                 (iou_mask[0] != 0))] = args.iou_noobj_weight
+                                 (iou_mask[0] != 0))] = np.sqrt(args.iou_noobj_weight)
             
             iou_mask[0][np.where((ious > threshold) & 
                                  (iou_mask[0] != args.iou_obj_weight))] = 0
@@ -159,7 +162,7 @@ def build_target(out_shape, gt, anchor_scales, threshold=0.5):
             tw = np.log(gt_w/anchor_scales[multidim_idxs[2]][0])
             th = np.log(gt_h/anchor_scales[multidim_idxs[2]][1])
             target_bbox[0, multidim_idxs[0], multidim_idxs[1], multidim_idxs[2]] = tx, ty, tw, th
-            target_class[flatten_idxs] = gt[0, i, 4]
+            target_class[0, multidim_idxs[0], multidim_idxs[1], multidim_idxs[2], int(gt[0, i, 4])] = 1
 
     return object_mask, target_bbox, target_class, iou_mask, target_iou
 
@@ -168,9 +171,10 @@ def save_fn(state, filename='./yolov2.pth.tar'):
     torch.save(state, filename)
 
 
-def train(train_loader, eval_loader, model, anchor_scales, epochs, opt):
-    lr_scheduler = StepLR(opt, step_size=30, gamma=0.1)
-    samples = len(train_loader) 
+def train(train_loader, model, anchor_scales, epochs, opt):
+    lr_scheduler = MultiStepLR(opt, milestones=[60,90], gamma=0.1)
+    samples = len(train_loader)
+    criterion = nn.MSELoss(size_average=False)
     for epoch in range(args.start_epoch, epochs):
         lr_scheduler.step()
         model.train()
@@ -178,13 +182,15 @@ def train(train_loader, eval_loader, model, anchor_scales, epochs, opt):
 
         for idx, (imgs, labels) in enumerate(train_loader):
             imgs = imgs.cuda()
+            num_gts = labels.size()[1]
             opt.zero_grad()
             with torch.enable_grad():
                 bbox_pred, iou_pred, prob_pred = model(imgs)
             
             object_mask, target_bbox, target_class, iou_mask, target_iou = \
                 build_target(bbox_pred.size(), labels, anchor_scales)
-            # pdb.set_trace()
+            # if epoch % 2 == 0:
+            #     pdb.set_trace()
             object_mask = torch.from_numpy(object_mask).cuda()
             target_bbox = torch.from_numpy(target_bbox).cuda()
             target_class = torch.from_numpy(target_class).cuda()
@@ -192,22 +198,16 @@ def train(train_loader, eval_loader, model, anchor_scales, epochs, opt):
             target_iou = torch.from_numpy(target_iou).cuda()
             # pdb.set_trace()
             with torch.enable_grad():
-                bbox_loss = (object_mask*F.l1_loss(bbox_pred,
-                                                   target_bbox,
-                                                   reduce=False)).sum()
-                prob_loss = (F.cross_entropy(prob_pred.view(-1, args.num_classes),
-                                             target_class,
-                                             reduce=False)*object_mask.view(-1)).sum()
-                iou_loss = (iou_mask*F.l1_loss(iou_pred,
-                                               target_iou,
-                                               reduce=False)).sum()
+                bbox_loss = criterion(bbox_pred*object_mask, target_bbox*object_mask) / num_gts
+                prob_loss = criterion(prob_pred*object_mask, target_class*object_mask) / num_gts
+                iou_loss = criterion(iou_pred*iou_mask, target_iou*iou_mask) / num_gts
                 loss = bbox_loss+prob_loss+iou_loss
             loss.backward()
             opt.step()
             bbox_loss_avg += bbox_loss.item()
             prob_loss_avg += prob_loss.item()
             iou_loss_avg += iou_loss.item()
-            # if idx % 500 == 0:
+            # if idx % 30 == 0:
             #     logger.info('epoch:{} step:{} bbox_loss:{:.6f} prob_loss:{:.6f} iou_loss:{:.6f}'.format(
             #         epoch, idx, bbox_loss.item(), prob_loss.item(), iou_loss.item()))
         logger.info('epoch: {}  bbox loss: {}  probs loss: {}  iou loss: {}'.format(
@@ -225,36 +225,22 @@ def main():
     anchor_scales = map(float, args.anchor_scales.split(','))
     anchor_scales = np.array(list(anchor_scales)).reshape(-1, 2)
 
-    data_transform = {
-        'train': transforms.Compose(
-            [
-                transforms.Resize((416, 416)),
-                transforms.ToTensor(), 
-                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
-            ]),
-        'val': transforms.Compose(
+    data_transform = transforms.Compose(
             [
                 transforms.Resize((416, 416)),
                 transforms.ToTensor(),
                 transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
             ])
-                    }
-    train_dataset = VOCdataset(usage='train', transform=data_transform['train'])
+    train_dataset = VOCdataset(usage='train', transform=data_transform)
     train_loader = torch.utils.data.DataLoader(train_dataset,
                                                batch_size=args.batch_size,
                                                shuffle=True,
 						                       num_workers=4,
                                                pin_memory=True,
                                                drop_last=True)
-    eval_dataset = VOCdataset(usage='eval', transform=data_transform['val'])
-    eval_loader = torch.utils.data.DataLoader(eval_dataset,
-                                              batch_size=args.batch_size,
-                                              shuffle=False,
-						                      num_workers=4,
-                                              pin_memory=True,
-                                              drop_last=True)
 
     darknet = Darknet_19(3, args.num_anchors, args.num_classes)
+    darknet.load_from_npz(args.pretrained_model, num_conv=18)
     darknet.cuda()
     optimizer = optim.SGD(darknet.parameters(),
                           lr=args.lr,
@@ -274,7 +260,6 @@ def main():
             print("no checkpoint found at '{}'".format(args.resume))
     # print('train')
     train(train_loader,
-          eval_loader,
           darknet,
           anchor_scales,
           epochs=args.epochs,
