@@ -28,7 +28,7 @@ parser.add_argument('--resume', type=str, default=None,
                     help='path to latest checkpoint')
 parser.add_argument('--start_epoch', default=0, type=int,
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('--epochs', type=int, default=160,
+parser.add_argument('--epochs', type=int, default=400,
                     help='number of total epochs to run')
 parser.add_argument('--lr', type=float, default=0.001,
                     help='base learning rate')
@@ -42,7 +42,7 @@ parser.add_argument('--bbox_loss_weight', type=float, default=5.0,
                     help='weight of bbox loss')
 parser.add_argument('--batch_size', type=int, default=1,
                     help='batch_size must be 1')
-parser.add_argument('--iou_obj_weight', type=float, default=5.0,
+parser.add_argument('--iou_obj_weight', type=float, default=2.236,
                     help='iou loss weight when anchors has gt')
 parser.add_argument('--iou_noobj_weight', type=float, default=1.0,
                     help='iou loss weight when anchors has gt')
@@ -151,7 +151,7 @@ def build_target(out_shape, gt, anchor_scales, threshold=0.5):
             # ignore this anchor for iou loss compute? (yes)
             iou_mask[0][np.where((ious < threshold) & 
                                  (iou_mask[0] != args.iou_obj_weight) &
-                                 (iou_mask[0] != 0))] = np.sqrt(args.iou_noobj_weight)
+                                 (iou_mask[0] != 0))] = args.iou_noobj_weight
             
             iou_mask[0][np.where((ious > threshold) & 
                                  (iou_mask[0] != args.iou_obj_weight))] = 0
@@ -172,7 +172,7 @@ def save_fn(state, filename='./yolov2.pth.tar'):
 
 
 def train(train_loader, model, anchor_scales, epochs, opt):
-    lr_scheduler = MultiStepLR(opt, milestones=[60,90], gamma=0.1)
+    lr_scheduler = MultiStepLR(opt, milestones=[150], gamma=0.1)
     samples = len(train_loader)
     criterion = nn.MSELoss(size_average=False)
     for epoch in range(args.start_epoch, epochs):
@@ -182,7 +182,7 @@ def train(train_loader, model, anchor_scales, epochs, opt):
 
         for idx, (imgs, labels) in enumerate(train_loader):
             imgs = imgs.cuda()
-            num_gts = labels.size()[1]
+            # num_gts = labels.size()[1]
             opt.zero_grad()
             with torch.enable_grad():
                 bbox_pred, iou_pred, prob_pred = model(imgs)
@@ -198,9 +198,9 @@ def train(train_loader, model, anchor_scales, epochs, opt):
             target_iou = torch.from_numpy(target_iou).cuda()
             # pdb.set_trace()
             with torch.enable_grad():
-                bbox_loss = criterion(bbox_pred*object_mask, target_bbox*object_mask) / num_gts
-                prob_loss = criterion(prob_pred*object_mask, target_class*object_mask) / num_gts
-                iou_loss = criterion(iou_pred*iou_mask, target_iou*iou_mask) / num_gts
+                bbox_loss = criterion(bbox_pred*object_mask, target_bbox*object_mask)# / num_gts
+                prob_loss = criterion(prob_pred*object_mask, target_class*object_mask)# / num_gts
+                iou_loss = criterion(iou_pred*iou_mask, target_iou*iou_mask)# / num_gts
                 loss = bbox_loss+prob_loss+iou_loss
             loss.backward()
             opt.step()

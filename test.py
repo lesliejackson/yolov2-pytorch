@@ -30,7 +30,7 @@ parser.add_argument('--num_classes', type=int, default=20,
                     help='number of classes')
 parser.add_argument('--num_anchors', type=int, default=5,
                     help='number of anchors per cell')                    
-parser.add_argument('--threshold', type=float, default=0.4,
+parser.add_argument('--threshold', type=float, default=0.25,
                     help='iou threshold')
 parser.add_argument('--test_dir', type=str, help='path to test dataset')
 parser.add_argument('--batch_size', type=int, default=1,
@@ -79,7 +79,7 @@ def test(data_loader, model, anchor_scales):
         wh_transform = transform_size(bbox_pred[..., 2:4], anchor_scales)
         # pdb.set_trace()
         bbox_transform = torch.cat([xy_transform, wh_transform], dim=-1)
-        bbox_transform = bbox_transform.cpu().numpy()
+        bbox_transform = bbox_transform.numpy()
         bbox_corner = transform_center2corner(bbox_transform)
         iou_pred = iou_pred.cpu().numpy()
         prob_pred = prob_pred.cpu().numpy()
@@ -94,7 +94,7 @@ def test(data_loader, model, anchor_scales):
 
         np.clip(bboxs, 0, 1, out=bboxs)
         img = Image.open(filename[0])
-        h, w = img.size
+        w, h = img.size
         draw = ImageDraw.Draw(img)
         # pdb.set_trace()
         for i in range(ious.shape[0]):
