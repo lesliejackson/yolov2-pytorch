@@ -30,7 +30,7 @@ parser.add_argument('--num_classes', type=int, default=20,
                     help='number of classes')
 parser.add_argument('--num_anchors', type=int, default=5,
                     help='number of anchors per cell')                    
-parser.add_argument('--threshold', type=float, default=0.25,
+parser.add_argument('--threshold', type=float, default=0.3,
                     help='iou threshold')
 parser.add_argument('--test_dir', type=str, help='path to test dataset')
 parser.add_argument('--batch_size', type=int, default=1,
@@ -41,7 +41,6 @@ def transform_center(xy):
     b, h, w, num_anchors, _ = xy.size()
     x = xy[..., 0:1]
     y = xy[..., 1:2]
-    # pdb.set_trace()
     offset_x = torch.arange(w).view(1, 1, w, 1, 1)
     offset_y = torch.arange(h).view(1, h, 1, 1, 1)
     x = (x + offset_x)/w
@@ -56,7 +55,6 @@ def transform_size(wh, anchor_scales):
                         torch.exp(wh[..., 0:1])*anchor_scales[:, 0:1]/w,
                         torch.exp(wh[..., 1:2])*anchor_scales[:, 1:2]/h
                      ], dim=-1)
-
 
 
 def transform_center2corner(bbox):
@@ -77,7 +75,6 @@ def test(data_loader, model, anchor_scales):
         bbox_pred = bbox_pred.cpu()
         xy_transform = transform_center(bbox_pred[..., :2])
         wh_transform = transform_size(bbox_pred[..., 2:4], anchor_scales)
-        # pdb.set_trace()
         bbox_transform = torch.cat([xy_transform, wh_transform], dim=-1)
         bbox_transform = bbox_transform.numpy()
         bbox_corner = transform_center2corner(bbox_transform)
@@ -96,11 +93,13 @@ def test(data_loader, model, anchor_scales):
         img = Image.open(filename[0])
         w, h = img.size
         draw = ImageDraw.Draw(img)
-        # pdb.set_trace()
         for i in range(ious.shape[0]):
-            draw.rectangle((bboxs[i][0]*w, bboxs[i][1]*h, bboxs[i][2]*w, bboxs[i][3]*h))
-            # pdb.set_trace()
-            draw.text((bboxs[i][0]*w, bboxs[i][1]*h), reverse_cls_dict[classes[i]])
+            x0, y0, x1, y1= bboxs[i][0]*w, bboxs[i][1]*h, bboxs[i][2]*w, bboxs[i][3]*h
+            draw.line([(x0, y0), (x1, y0)], fill='red', width=3)
+            draw.line([(x1, y0), (x1, y1)], fill='red', width=3)
+            draw.line([(x1, y1), (x0, y1)], fill='red', width=3)
+            draw.line([(x0, y1), (x0, y0)], fill='red', width=3)
+            draw.text((x0, y0), reverse_cls_dict[classes[i]], fill='white')
         img.save('d:\\YOLOV2\\test_results\\{}.jpg'.format(os.path.basename(filename[0])))
 
 
@@ -136,7 +135,6 @@ def main():
             print("loaded checkpoint success: '{}'".format(args.resume))
         else:
             print("no checkpoint found at {}".format(args.resume))
-    # print('train')
     test(test_loader, darknet, anchor_scales)
 
 
