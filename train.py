@@ -40,10 +40,16 @@ parser.add_argument('--weight_decay', type=float, default=0.0005,
                     help='weight of l2 regularize')
 parser.add_argument('--batch_size', type=int, default=1,
                     help='batch size must be 1')
-parser.add_argument('--iou_obj_weight', type=float, default=2.236,
+parser.add_argument('--iou_obj', type=float, default=2.236,
                     help='iou loss weight')
-parser.add_argument('--iou_noobj_weight', type=float, default=1.0,
+parser.add_argument('--iou_noobj', type=float, default=1.0,
                     help='iou loss weight')
+parser.add_argument('--coord_obj', type=float, default=1.0,
+                    help='coord loss weight with obj')
+parser.add_argument('--prob_obj', type=float, default=1.0,
+                    help='prob loss weight with obj')
+parser.add_argument('--coord_noobj', type=float, default=0.1,
+                    help='coord loss weight without obj')
 parser.add_argument('--pretrained_model', type=str, default=None,
                     help='path to pretrained model')
 
@@ -58,6 +64,11 @@ console_handler.setFormatter(fmt)
 logger.addHandler(file_handler)
 logger.addHandler(console_handler)
 logger.setLevel(logging.INFO)
+
+
+def variable_input_collate_fn(batch):
+    data = list(zip(*batch))
+    return [torch.stack(data[0], 0), data[1]]
 
 
 def iou(anchors, gt, h, w):
@@ -79,54 +90,60 @@ def iou(anchors, gt, h, w):
     return intersection / (anchors[..., 2]*anchors[..., 3] + gt[2]*gt[3] - intersection)
 
 
-def build_target(out_shape, gt, anchor_scales, threshold=0.5):
-    num_gts = gt.size()[1]
-    b, h, w, n, _ = out_shape
+def build_target(out_shape, gt, anchor_scales, seen, threshold=0.6):
+    bs, h, w, n, _ = out_shape
 
-    target_bbox = np.zeros((b, h, w, n, 4), dtype=np.float32)
-    object_mask = np.zeros((b, h, w, n, 1), dtype=np.float32)
-    iou_mask = np.ones((b, h, w, n), dtype=np.float32)
-    target_iou = np.zeros((b, h, w, n), dtype=np.float32)
+    target_bbox = np.zeros((bs, h, w, n, 4), dtype=np.float32)
+    prob_mask = np.zeros((bs, h, w, n, 1), dtype=np.float32)
+    iou_mask = np.ones((bs, h, w, n), dtype=np.float32)
+    target_iou = np.zeros((bs, h, w, n), dtype=np.float32)
     anchors = np.zeros((h, w, n, 4), dtype=np.float32)
 
-    target_class = np.zeros((b, h, w, n, args.num_classes), dtype=np.float32)
+    if seen < 12800:
+        bbox_mask = np.tile(args.coord_noobj, (bs, h, w, n, 1)).astype(np.float32)
+        target_bbox[..., 0:2].fill(0.5)
+    else:
+        bbox_mask = bbox_mask = np.zeros((bs, h, w, n, 1), dtype=np.float32)
+
+    target_class = np.zeros((bs, h, w, n, args.num_classes), dtype=np.float32)
 
     anchors[..., 0] += np.arange(0.5, w, 1).reshape(1, w, 1)
     anchors[..., 1] += np.arange(0.5, h, 1).reshape(h, 1, 1)
     anchors[..., 2:] += anchor_scales
 
-    for i in range(num_gts):
-        gt_x = (gt[0, i, 0]+gt[0, i, 2])/2
-        gt_y = (gt[0, i, 1]+gt[0, i, 3])/2
-        gt_w = gt[0, i, 2]-gt[0, i, 0]
-        gt_h = gt[0, i, 3]-gt[0, i, 1]
-        gt_x, gt_y, gt_w, gt_h = gt_x*w, gt_y*h, gt_w*w, gt_h*h
+    for b in range(bs):
+        num_gts = len(gt[b])
+        for i in range(num_gts):
+            gt_x = (gt[b][i][0]+gt[b][i][2])/2
+            gt_y = (gt[b][i][1]+gt[b][i][3])/2
+            gt_w = gt[b][i][2]-gt[b][i][0]
+            gt_h = gt[b][i][3]-gt[b][i][1]
+            gt_x, gt_y, gt_w, gt_h = gt_x*w, gt_y*h, gt_w*w, gt_h*h
 
-        ious = iou(anchors, np.array([gt_x, gt_y, gt_w, gt_h], dtype=np.float32), h, w)
-        flatten_idxs = np.argmax(ious)
-        multidim_idxs = np.unravel_index(flatten_idxs, (h, w, n))
+            ious = iou(anchors, np.array([gt_x, gt_y, gt_w, gt_h], dtype=np.float32), h, w)
+            flatten_idxs = np.argmax(ious)
+            multidim_idxs = np.unravel_index(flatten_idxs, (h, w, n))
 
-        # if iou of best match < threshold we ignore it
-        if ious[multidim_idxs[0], multidim_idxs[1], multidim_idxs[2]] > threshold:
-            object_mask[0, multidim_idxs[0], multidim_idxs[1], multidim_idxs[2]] = 1
-            target_iou[0, multidim_idxs[0], multidim_idxs[1], multidim_idxs[2]] = 1
+            bbox_mask[b, multidim_idxs[0], multidim_idxs[1], multidim_idxs[2]] = args.coord_obj
+            prob_mask[b, multidim_idxs[0], multidim_idxs[1], multidim_idxs[2]] = args.prob_obj
+            target_iou[b, multidim_idxs[0], multidim_idxs[1], multidim_idxs[2]] = ious[b, multidim_idxs[0], multidim_idxs[1], multidim_idxs[2]]
 
             # an anchor with any ground_truth's iou > threshold and is not the best match then ignore it
-            iou_mask[0][np.where((ious < threshold) & 
-                                 (iou_mask[0] != args.iou_obj_weight) &
-                                 (iou_mask[0] != 0))] = args.iou_noobj_weight
+            iou_mask[b][np.where((ious < threshold) &
+                                 (iou_mask[b] != args.iou_obj) &
+                                 (iou_mask[b] != 0))] = args.iou_noobj
             
-            iou_mask[0][np.where((ious > threshold) & 
-                                 (iou_mask[0] != args.iou_obj_weight))] = 0
-            iou_mask[0, multidim_idxs[0], multidim_idxs[1], multidim_idxs[2]] = args.iou_obj_weight
+            iou_mask[b][np.where((ious > threshold) & 
+                                 (iou_mask[b] != args.iou_obj))] = 0
+            iou_mask[b, multidim_idxs[0], multidim_idxs[1], multidim_idxs[2]] = args.iou_obj
 
             tx, ty = gt_x-np.floor(gt_x), gt_y-np.floor(gt_y)
             tw = np.log(gt_w/anchor_scales[multidim_idxs[2]][0])
             th = np.log(gt_h/anchor_scales[multidim_idxs[2]][1])
-            target_bbox[0, multidim_idxs[0], multidim_idxs[1], multidim_idxs[2]] = tx, ty, tw, th
-            target_class[0, multidim_idxs[0], multidim_idxs[1], multidim_idxs[2], int(gt[0, i, 4])] = 1
+            target_bbox[b, multidim_idxs[0], multidim_idxs[1], multidim_idxs[2]] = tx, ty, tw, th
+            target_class[b, multidim_idxs[0], multidim_idxs[1], multidim_idxs[2], int(gt[0, i, 4])] = 1
 
-    return object_mask, target_bbox, target_class, iou_mask, target_iou
+    return bbox_mask, prob_mask, iou_mask, target_bbox, target_class, target_iou
 
 
 def save_fn(state, filename='./yolov2.pth.tar'):
@@ -137,28 +154,30 @@ def train(train_loader, model, anchor_scales, epochs, opt):
     lr_scheduler = MultiStepLR(opt, milestones=[60, 90], gamma=0.1)
     samples = len(train_loader)
     criterion = nn.MSELoss(size_average=False)
+    model.train()
+    seen = 0
     for epoch in range(args.start_epoch, epochs):
         lr_scheduler.step(epoch=epoch)
-        model.train()
         bbox_loss_avg, prob_loss_avg, iou_loss_avg = 0.0, 0.0, 0.0
 
-        for idx, (imgs, labels) in enumerate(train_loader):
+        for imgs, labels in train_loader:
             imgs = imgs.cuda()
             opt.zero_grad()
             with torch.enable_grad():
                 bbox_pred, iou_pred, prob_pred = model(imgs)
             
-            object_mask, target_bbox, target_class, iou_mask, target_iou = \
-                build_target(bbox_pred.size(), labels, anchor_scales)
-            object_mask = torch.from_numpy(object_mask).cuda()
+            bbox_mask, prob_mask, iou_mask, target_bbox, target_class, target_iou = \
+                build_target(bbox_pred.size(), labels, anchor_scales, seen)
+            bbox_mask = torch.from_numpy(bbox_mask).cuda()
+            prob_mask = torch.from_numpy(prob_mask).cuda()
+            iou_mask = torch.from_numpy(iou_mask).cuda()            
             target_bbox = torch.from_numpy(target_bbox).cuda()
             target_class = torch.from_numpy(target_class).cuda()
-            iou_mask = torch.from_numpy(iou_mask).cuda()
             target_iou = torch.from_numpy(target_iou).cuda()
 
             with torch.enable_grad():
-                bbox_loss = criterion(bbox_pred*object_mask, target_bbox*object_mask)
-                prob_loss = criterion(prob_pred*object_mask, target_class*object_mask)
+                bbox_loss = criterion(bbox_pred*bbox_mask, target_bbox*bbox_mask)
+                prob_loss = criterion(prob_pred*prob_mask, target_class*prob_mask)
                 iou_loss = criterion(iou_pred*iou_mask, target_iou*iou_mask)
                 loss = bbox_loss+prob_loss+iou_loss
             loss.backward()
@@ -166,6 +185,7 @@ def train(train_loader, model, anchor_scales, epochs, opt):
             bbox_loss_avg += bbox_loss.item()
             prob_loss_avg += prob_loss.item()
             iou_loss_avg += iou_loss.item()
+            seen += 1
         logger.info('epoch: {}  bbox loss: {}  probs loss: {}  iou loss: {}'.format(
             epoch, bbox_loss_avg/samples, prob_loss_avg/samples, iou_loss_avg/samples
         ))
@@ -193,6 +213,7 @@ def main():
                                                shuffle=True,
                                                num_workers=4,
                                                pin_memory=True,
+                                               collate_fn=variable_input_collate_fn,
                                                drop_last=True)
 
     darknet = Darknet_19(3, args.num_anchors, args.num_classes)
