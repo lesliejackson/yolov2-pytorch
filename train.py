@@ -38,7 +38,7 @@ parser.add_argument('--num_anchors', type=int, default=5,
                     help='number of anchors per cell')
 parser.add_argument('--weight_decay', type=float, default=0.0005,
                     help='weight of l2 regularize')
-parser.add_argument('--batch_size', type=int, default=1,
+parser.add_argument('--batch_size', type=int, default=16,
                     help='batch size must be 1')
 parser.add_argument('--iou_obj', type=float, default=2.236,
                     help='iou loss weight')
@@ -126,7 +126,7 @@ def build_target(out_shape, gt, anchor_scales, seen, threshold=0.6):
 
             bbox_mask[b, multidim_idxs[0], multidim_idxs[1], multidim_idxs[2]] = args.coord_obj
             prob_mask[b, multidim_idxs[0], multidim_idxs[1], multidim_idxs[2]] = args.prob_obj
-            target_iou[b, multidim_idxs[0], multidim_idxs[1], multidim_idxs[2]] = ious[b, multidim_idxs[0], multidim_idxs[1], multidim_idxs[2]]
+            target_iou[b, multidim_idxs[0], multidim_idxs[1], multidim_idxs[2]] = ious[multidim_idxs[0], multidim_idxs[1], multidim_idxs[2]]
 
             # an anchor with any ground_truth's iou > threshold and is not the best match then ignore it
             iou_mask[b][np.where((ious < threshold) &
@@ -141,7 +141,7 @@ def build_target(out_shape, gt, anchor_scales, seen, threshold=0.6):
             tw = np.log(gt_w/anchor_scales[multidim_idxs[2]][0])
             th = np.log(gt_h/anchor_scales[multidim_idxs[2]][1])
             target_bbox[b, multidim_idxs[0], multidim_idxs[1], multidim_idxs[2]] = tx, ty, tw, th
-            target_class[b, multidim_idxs[0], multidim_idxs[1], multidim_idxs[2], int(gt[0, i, 4])] = 1
+            target_class[b, multidim_idxs[0], multidim_idxs[1], multidim_idxs[2], int(gt[b][i][4])] = 1
 
     return bbox_mask, prob_mask, iou_mask, target_bbox, target_class, target_iou
 
@@ -160,7 +160,7 @@ def train(train_loader, model, anchor_scales, epochs, opt):
         lr_scheduler.step(epoch=epoch)
         bbox_loss_avg, prob_loss_avg, iou_loss_avg = 0.0, 0.0, 0.0
 
-        for imgs, labels in train_loader:
+        for idx, (imgs, labels) in enumerate(train_loader):
             imgs = imgs.cuda()
             opt.zero_grad()
             with torch.enable_grad():
@@ -168,6 +168,7 @@ def train(train_loader, model, anchor_scales, epochs, opt):
             
             bbox_mask, prob_mask, iou_mask, target_bbox, target_class, target_iou = \
                 build_target(bbox_pred.size(), labels, anchor_scales, seen)
+            
             bbox_mask = torch.from_numpy(bbox_mask).cuda()
             prob_mask = torch.from_numpy(prob_mask).cuda()
             iou_mask = torch.from_numpy(iou_mask).cuda()            
@@ -175,17 +176,22 @@ def train(train_loader, model, anchor_scales, epochs, opt):
             target_class = torch.from_numpy(target_class).cuda()
             target_iou = torch.from_numpy(target_iou).cuda()
 
+            num_gts = sum(len(gts) for gts in labels)
+
             with torch.enable_grad():
-                bbox_loss = criterion(bbox_pred*bbox_mask, target_bbox*bbox_mask)
-                prob_loss = criterion(prob_pred*prob_mask, target_class*prob_mask)
-                iou_loss = criterion(iou_pred*iou_mask, target_iou*iou_mask)
+                bbox_loss = criterion(bbox_pred*bbox_mask, target_bbox*bbox_mask) / num_gts
+                prob_loss = criterion(prob_pred*prob_mask, target_class*prob_mask) / num_gts
+                iou_loss = criterion(iou_pred*iou_mask, target_iou*iou_mask) / num_gts
                 loss = bbox_loss+prob_loss+iou_loss
             loss.backward()
             opt.step()
             bbox_loss_avg += bbox_loss.item()
             prob_loss_avg += prob_loss.item()
             iou_loss_avg += iou_loss.item()
-            seen += 1
+            seen += args.batch_size
+            # if idx % 10 == 0:
+            #     logger.info('epoch:{} step:{} bbox loss:{} probs loss:{} iou loss:{}'.format(
+            #         epoch, idx, bbox_loss.item(), prob_loss.item(), iou_loss.item()))
         logger.info('epoch: {}  bbox loss: {}  probs loss: {}  iou loss: {}'.format(
             epoch, bbox_loss_avg/samples, prob_loss_avg/samples, iou_loss_avg/samples
         ))
@@ -197,7 +203,7 @@ def train(train_loader, model, anchor_scales, epochs, opt):
 def main():
     global args
     args = parser.parse_args()
-    assert args.batch_size == 1
+    # assert args.batch_size == 1
     anchor_scales = map(float, args.anchor_scales.split(','))
     anchor_scales = np.array(list(anchor_scales)).reshape(-1, 2)
 
@@ -205,7 +211,7 @@ def main():
             [
                 transforms.Resize((416, 416)),
                 transforms.ToTensor(),
-                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
             ])
     train_dataset = VOCdataset(usage='train', transform=data_transform)
     train_loader = torch.utils.data.DataLoader(train_dataset,
