@@ -86,7 +86,7 @@ def iou(anchors, gt, h, w):
     tb = np.minimum(anchors_xmax, gt[0]+0.5*gt[2])-np.maximum(anchors_xmin, gt[0]-0.5*gt[2])
     lr = np.minimum(anchors_ymax, gt[1]+0.5*gt[3])-np.maximum(anchors_ymin, gt[1]-0.5*gt[3])
     intersection = tb * lr
-    intersection[np.where((tb < 0) & (lr < 0))] = 0
+    intersection[np.where((tb < 0) | (lr < 0))] = 0
     return intersection / (anchors[..., 2]*anchors[..., 3] + gt[2]*gt[3] - intersection)
 
 
@@ -103,7 +103,7 @@ def build_target(out_shape, gt, anchor_scales, seen, threshold=0.6):
         bbox_mask = np.tile(args.coord_noobj, (bs, h, w, n, 1)).astype(np.float32)
         target_bbox[..., 0:2].fill(0.5)
     else:
-        bbox_mask = bbox_mask = np.zeros((bs, h, w, n, 1), dtype=np.float32)
+        bbox_mask  = np.zeros((bs, h, w, n, 1), dtype=np.float32)
 
     target_class = np.zeros((bs, h, w, n, args.num_classes), dtype=np.float32)
 
@@ -129,7 +129,7 @@ def build_target(out_shape, gt, anchor_scales, seen, threshold=0.6):
             target_iou[b, multidim_idxs[0], multidim_idxs[1], multidim_idxs[2]] = ious[multidim_idxs[0], multidim_idxs[1], multidim_idxs[2]]
 
             # an anchor with any ground_truth's iou > threshold and is not the best match then ignore it
-            iou_mask[b][np.where((ious < threshold) &
+            iou_mask[b][np.where((ious <= threshold) &
                                  (iou_mask[b] != args.iou_obj) &
                                  (iou_mask[b] != 0))] = args.iou_noobj
             
