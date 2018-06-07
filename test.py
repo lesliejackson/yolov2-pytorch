@@ -30,11 +30,18 @@ parser.add_argument('--num_classes', type=int, default=20,
                     help='number of classes')
 parser.add_argument('--num_anchors', type=int, default=5,
                     help='number of anchors per cell')                    
-parser.add_argument('--threshold', type=float, default=0.3,
+parser.add_argument('--threshold', type=float, default=0.25,
                     help='iou threshold')
 parser.add_argument('--test_dir', type=str, help='path to test dataset')
 parser.add_argument('--batch_size', type=int, default=1,
                     help='batch_size must be 1')
+
+_classes = (
+    'aeroplane', 'bicycle', 'bird', 'boat',
+    'bottle', 'bus', 'car', 'cat', 'chair',
+    'cow', 'diningtable', 'dog', 'horse',
+    'motorbike', 'person', 'pottedplant',
+    'sheep', 'sofa', 'train', 'tvmonitor')
 
 
 def transform_center(xy):
@@ -50,7 +57,6 @@ def transform_center(xy):
 
 def transform_size(wh, anchor_scales):
     b, h, w, num_anchors, _ = wh.size()
-    anchor_scales = torch.from_numpy(anchor_scales)
     return torch.cat([
                         torch.exp(wh[..., 0:1])*anchor_scales[:, 0:1]/w,
                         torch.exp(wh[..., 1:2])*anchor_scales[:, 1:2]/h
@@ -68,6 +74,10 @@ def test(data_loader, model, anchor_scales):
     classes_dict = data_loader.dataset.classes
     reverse_cls_dict = {v:k for k,v in classes_dict.items()}
 
+    # files = []
+    # for i in range(20):
+    #     files.append(open('results/{}.txt'.format(reverse_cls_dict[i]), 'w'))
+
     for imgs, filename in data_loader:
         imgs = imgs.cuda()
         with torch.no_grad():
@@ -82,9 +92,12 @@ def test(data_loader, model, anchor_scales):
         prob_pred = prob_pred.cpu().numpy()
 
         idxs = np.where(iou_pred > args.threshold)
+        import pdb
+        # pdb.set_trace()
         ious = iou_pred[idxs]
         probs = prob_pred[idxs]
         classes = np.argmax(probs, axis=1)
+        # pdb.set_trace()
         probs = np.amax(probs, axis=1)
         final_probs = probs * ious
         bboxs = bbox_corner[idxs]
@@ -95,6 +108,8 @@ def test(data_loader, model, anchor_scales):
         draw = ImageDraw.Draw(img)
         for i in range(ious.shape[0]):
             x0, y0, x1, y1= bboxs[i][0]*w, bboxs[i][1]*h, bboxs[i][2]*w, bboxs[i][3]*h
+            # files[classes[i]].write('{} {} {} {} {} {}\n'.format(
+            #     os.path.basename(filename[0])[:-4], ious[i], x0, y0, x1, y1))
             draw.line([(x0, y0), (x1, y0)], fill='red', width=3)
             draw.line([(x1, y0), (x1, y1)], fill='red', width=3)
             draw.line([(x1, y1), (x0, y1)], fill='red', width=3)
@@ -109,14 +124,15 @@ def main():
     assert args.batch_size == 1
     anchor_scales = map(float, args.anchor_scales.split(','))
     anchor_scales = np.array(list(anchor_scales), dtype=np.float32).reshape(-1, 2)
+    anchor_scales = torch.from_numpy(anchor_scales)
 
     data_transform = transforms.Compose(
             [
                 transforms.Resize((416, 416)),
                 transforms.ToTensor(),
-                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
             ])
-    test_dataset = VOCdataset(usage='test', transform=data_transform, test_dir=args.test_dir)
+    test_dataset = VOCdataset('test', args.test_dir, data_transform)
     test_loader = torch.utils.data.DataLoader(test_dataset,
                                                batch_size=args.batch_size,
                                                shuffle=False,
@@ -126,7 +142,7 @@ def main():
 
     darknet = Darknet_19(3, args.num_anchors, args.num_classes)
     darknet.cuda()
-
+    # darknet.load_net('yolo-voc.weights.h5')
     if args.resume:
         if os.path.isfile(args.resume):
             print("load checkpoint from '{}'".format(args.resume))

@@ -10,32 +10,30 @@ import torch.utils.data
 import pdb
 
 
-def make_dataset(usage, test_dir=None):
+def make_dataset(usage, data_dir):
     """
     get data paths
     """
-    if usage not in ['test', 'train']:
+    if usage not in ['test', 'train', 'eval']:
         raise ValueError('unknown usage:{}'.format(usage))
     if usage == 'test':
-        if not test_dir or not os.path.isdir(test_dir) or not os.path.exists(test_dir):
-            raise ValueError('invalid test_dir:{}'.format(test_dir))
+        if not data_dir or not os.path.isdir(data_dir) or not os.path.exists(data_dir):
+            raise ValueError('invalid test_dir:{}'.format(data_dir))
     imgs = []
-    if usage == 'train':
+    if usage in ['train', 'eval']:
         labels = []
-        for rt, dirs, files in os.walk('data/JPEGImages'):
+        for rt, dirs, files in os.walk(data_dir + '/JPEGImages_small'):
             for file in files:
                 imgs.append(os.path.join(rt, file))
-        for rt, dirs, files in os.walk('data/Annotations'):
+        for rt, dirs, files in os.walk(data_dir + '/Annotations_small'):
             for file in files:
                 labels.append(os.path.join(rt, file))
         imgs.sort(), labels.sort()
         num_samples = len(imgs)
         assert num_samples == len(labels)
-        # pdb.set_trace()
-        if usage == 'train':
-            return imgs, labels
+        return imgs, labels
     else:
-        for rt, dirs, files in os.walk(test_dir):
+        for rt, dirs, files in os.walk(data_dir):
             for file in files:
                 imgs.append(os.path.join(rt, file))
         imgs.sort()
@@ -46,10 +44,10 @@ class VOCdataset(torch.utils.data.Dataset):
     """
     Pascal VOC dataset
     """
-    def __init__(self, usage, transform=None, test_dir=None):
+    def __init__(self, usage, data_dir, transform=None):
         super(VOCdataset, self).__init__()
         self.transform = transform
-        self.imgs, self.labels = make_dataset(usage, test_dir)
+        self.imgs, self.labels = make_dataset(usage, data_dir)
         self.classes = {'aeroplane': 0, 'bicycle': 1, 'bird': 2, 'boat': 3,
                         'bottle': 4, 'bus': 5, 'car': 6, 'cat': 7, 'chair': 8,
                         'cow': 9, 'diningtable': 10, 'dog': 11, 'horse': 12,
@@ -72,13 +70,13 @@ class VOCdataset(torch.utils.data.Dataset):
             gt = []
             for obj in root.findall('object'):
                 bndbox = obj.find('bndbox')
-                xmin = int(bndbox.find('xmin').text)/img_width
-                xmax = int(bndbox.find('xmax').text)/img_width
-                ymin = int(bndbox.find('ymin').text)/img_height
-                ymax = int(bndbox.find('ymax').text)/img_height
+                xmin = int(float(bndbox.find('xmin').text))/img_width
+                xmax = int(float(bndbox.find('xmax').text))/img_width
+                ymin = int(float(bndbox.find('ymin').text))/img_height
+                ymax = int(float(bndbox.find('ymax').text))/img_height
                 c = self.classes[obj.find('name').text]
                 gt.append([xmin, ymin, xmax, ymax, c])
-            return img, torch.from_numpy(np.array(gt))
+            return img, torch.from_numpy(np.array(gt, dtype=np.float32))
         return img, self.imgs[index]
 
     def __len__(self):
