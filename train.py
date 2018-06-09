@@ -28,9 +28,9 @@ parser.add_argument('--resume', type=str, default=None,
                     help='path to latest checkpoint')
 parser.add_argument('--start_epoch', default=0, type=int,
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('--epochs', type=int, default=100,
+parser.add_argument('--epochs', type=int, default=200,
                     help='number of total epochs to run')
-parser.add_argument('--lr', type=float, default=0.001,
+parser.add_argument('--lr', type=float, default=0.00001,
                     help='base learning rate')
 parser.add_argument('--num_classes', type=int, default=20,
                     help='number of classes')
@@ -38,9 +38,9 @@ parser.add_argument('--num_anchors', type=int, default=5,
                     help='number of anchors per cell')
 parser.add_argument('--weight_decay', type=float, default=0.0005,
                     help='weight of l2 regularize')
-parser.add_argument('--batch_size', type=int, default=16,
+parser.add_argument('--batch_size', type=int, default=25,
                     help='batch size must be 1')
-parser.add_argument('--iou_obj', type=float, default=5.0,
+parser.add_argument('--iou_obj', type=float, default=10.0,
                     help='iou loss weight')
 parser.add_argument('--iou_noobj', type=float, default=1.0,
                     help='iou loss weight')
@@ -48,7 +48,7 @@ parser.add_argument('--coord_obj', type=float, default=1.0,
                     help='coord loss weight with obj')
 parser.add_argument('--prob_obj', type=float, default=1.0,
                     help='prob loss weight with obj')
-parser.add_argument('--coord_noobj', type=float, default=0.1,
+parser.add_argument('--coord_noobj', type=float, default=1.0,
                     help='coord loss weight without obj')
 parser.add_argument('--pretrained_model', type=str, default=None,
                     help='path to pretrained model')
@@ -101,7 +101,7 @@ def iou(bbox1, bbox2):
 
 
 def build_target(bbox_pred, gt, anchor_scales, seen, threshold=0.6):
-    bs, h, w, n, _ = bbox_pred.shape
+    bs, h, w, n, _ = bbox_pred.size()
 
     target_bbox = np.zeros((bs, h, w, n, 4), dtype=np.float32)
     prob_mask = np.zeros((bs, h, w, n, 1), dtype=np.float32)
@@ -110,7 +110,7 @@ def build_target(bbox_pred, gt, anchor_scales, seen, threshold=0.6):
     bbox_mask  = np.zeros((bs, h, w, n, 1), dtype=np.float32)
     target_class = np.zeros((bs, h, w, n, args.num_classes), dtype=np.float32)
 
-    if seen < 5000:
+    if seen < 1000:
         bbox_mask += np.sqrt(args.coord_noobj)
         target_bbox[..., 0:2] += 0.5
 
@@ -123,14 +123,17 @@ def build_target(bbox_pred, gt, anchor_scales, seen, threshold=0.6):
             gt_y = (gt[b][i][1]+gt[b][i][3])/2 * h
             gt_w = (gt[b][i][2]-gt[b][i][0]) * w
             gt_h = (gt[b][i][3]-gt[b][i][1]) * h
-            gt_x, gt_y, gt_w, gt_h = gt_x.item(), gt_y.item(), gt_w.item(), gt_h.item()
+            # gt_x, gt_y, gt_w, gt_h = gt_x.item(), gt_y.item(), gt_w.item(), gt_h.item()
+            # pdb.set_trace()
             max_ious = np.maximum(max_ious, iou(cur_pred, [gt_x, gt_y, gt_w, gt_h]))
         iou_mask[b][max_ious > threshold] = 0
-
-
+    # pdb.set_trace()
+    nGT = 0
+    nCorrect = 0
     for b in range(bs):
         num_gts = len(gt[b])
         for i in range(num_gts):
+            nGT += 1
             gt_x = (gt[b][i][0]+gt[b][i][2])/2 * w
             gt_y = (gt[b][i][1]+gt[b][i][3])/2 * h
             gt_w = (gt[b][i][2]-gt[b][i][0]) * w
@@ -141,13 +144,14 @@ def build_target(bbox_pred, gt, anchor_scales, seen, threshold=0.6):
             for a in range(n):
                 aw = anchor_scales[a][0]
                 ah = anchor_scales[a][1]
-                cur_iou = iou([0,0,aw,ah], [0,0,gt_w.item(),gt_h.item()])
+                # pdb.set_trace()
+                cur_iou = iou([0,0,aw,ah], [0,0,gt_w,gt_h])
                 if cur_iou > best_iou:
                     best_iou = cur_iou
                     best_anchor = a
             
             pred_bbox = list(bbox_pred[b, cell_y, cell_x, best_anchor])
-            gt_bbox = [gt_x.item(), gt_y.item(), gt_w.item(), gt_h.item()]
+            gt_bbox = [gt_x, gt_y, gt_w, gt_h]
             # pdb.set_trace()
             bbox_mask[b, cell_y, cell_x, best_anchor] = np.sqrt(args.coord_obj)
             iou_mask[b, cell_y, cell_x, best_anchor] = np.sqrt(args.iou_obj)
@@ -159,8 +163,11 @@ def build_target(bbox_pred, gt, anchor_scales, seen, threshold=0.6):
             th = np.log(gt_h/anchor_scales[best_anchor][1])
             target_bbox[b, cell_y, cell_x, best_anchor] = tx, ty, tw, th
             target_class[b, cell_y, cell_x, best_anchor, int(gt[b][i][4])] = 1
-            target_iou[b, cell_y, cell_x, best_anchor] = iou(pred_bbox, gt_bbox)
-    return bbox_mask, prob_mask, iou_mask, target_bbox, target_class, target_iou
+            tiou = iou(pred_bbox, gt_bbox)
+            target_iou[b, cell_y, cell_x, best_anchor] = tiou
+            if tiou > 0.5:
+                nCorrect += 1
+    return nGT, nCorrect, bbox_mask, prob_mask, iou_mask, target_bbox, target_class, target_iou
 
 
 def save_fn(state, filename='./yolov2.pth.tar'):
@@ -168,7 +175,7 @@ def save_fn(state, filename='./yolov2.pth.tar'):
 
 
 def train(train_loader, eval_loader, model, anchor_scales, epochs, opt):
-    lr_scheduler = MultiStepLR(opt, milestones=[60, 90], gamma=0.1)
+    lr_scheduler = MultiStepLR(opt, milestones=[70,150], gamma=0.1)
     samples = len(train_loader.dataset)
     criterion = nn.MSELoss(size_average=False)
     seen = 0
@@ -185,9 +192,20 @@ def train(train_loader, eval_loader, model, anchor_scales, epochs, opt):
             with torch.enable_grad():
                 bbox_pred, iou_pred, prob_pred = model(imgs)
             
-            bbox_pred_np = bbox_pred.detach().cpu().numpy()
-            bbox_mask, prob_mask, iou_mask, target_bbox, target_class, target_iou = \
-                build_target(bbox_pred_np, labels, anchor_scales, seen)
+            h = bbox_pred.size(1)
+            w = bbox_pred.size(2)
+            bbox_pred_np = bbox_pred.detach().cpu()
+            offset_x = torch.arange(w).view(1, 1, w, 1, 1)
+            offset_y = torch.arange(h).view(1, h, 1, 1, 1)
+            # pdb.set_trace()
+            bbox_pred_np[..., 0:1] += offset_x
+            bbox_pred_np[..., 1:2] += offset_y
+            bbox_pred_np[..., 2:3] = torch.exp(bbox_pred_np[..., 2:3])*anchor_scales[:, 0:1]
+            bbox_pred_np[..., 3:4] = torch.exp(bbox_pred_np[..., 3:4])*anchor_scales[:, 1:2]
+            # pdb.set_trace()
+            with torch.no_grad():
+                nGT, nCorrect, bbox_mask, prob_mask, iou_mask, target_bbox, target_class, target_iou = \
+                    build_target(bbox_pred_np, labels, anchor_scales, seen)
             
             bbox_mask = torch.from_numpy(bbox_mask).cuda()
             prob_mask = torch.from_numpy(prob_mask).cuda()
@@ -203,53 +221,69 @@ def train(train_loader, eval_loader, model, anchor_scales, epochs, opt):
                 loss = bbox_loss+prob_loss+iou_loss
             loss.backward()
             opt.step()
-            bbox_loss_avg += bbox_loss.item()
-            prob_loss_avg += prob_loss.item()
-            iou_loss_avg += iou_loss.item()
+            # bbox_loss_avg += bbox_loss.item()
+            # prob_loss_avg += prob_loss.item()
+            # iou_loss_avg += iou_loss.item()
             seen += args.batch_size
+        # pdb.set_trace()
 
-        eval_loss = evaluation(eval_loader, model, anchor_scales)
-        logger.info('train loss: {} eval loss: {}'.format(
-            bbox_loss_avg/samples+prob_loss_avg/samples+iou_loss_avg/samples, sum(eval_loss)
+            if idx % 10 == 0:
+                logger.info('epoch:{} nGT:{} nCorrect:{} bbox loss:{:.4f} iou loss:{:.4f} prob loss:{:.4f}'.format(
+                    epoch, nGT, nCorrect, bbox_loss.item(), iou_loss.item(), prob_loss.item()
+                ))
+        e_nGT, e_nCorrect, e_bbox_loss, e_iou_loss, e_prob_loss = evaluation(eval_loader, model, anchor_scales)
+        logger.info('eval nGt:{} nCorrect:{} bbox loss:{:.4f} iou loss:{:.4f} prob loss:{:.4f}'.format(
+            e_nGT, e_nCorrect, e_bbox_loss, e_iou_loss, e_prob_loss
         ))
-        if sum(eval_loss) < lowest_loss:
-            lowest_loss = sum(eval_loss)
+        if e_bbox_loss + e_iou_loss + e_prob_loss < lowest_loss:
+            lowest_loss = e_bbox_loss + e_iou_loss + e_prob_loss
             save_fn({'epoch': epoch+1,
                      'state_dict': model.state_dict(),
                      'optimizer': opt.state_dict()})
 
 
 def evaluation(eval_loader, model, anchor_scales):
-    samples = len(eval_loader.dataset)
+    samples = len(eval_loader)
     criterion = nn.MSELoss(size_average=False)
     model.eval()
     bbox_loss_avg, prob_loss_avg, iou_loss_avg = 0.0, 0.0, 0.0
 
+    epoch_nGT = epoch_nCorrect = 0
     for idx, (imgs, labels) in enumerate(eval_loader):
         imgs = imgs.cuda()
         with torch.no_grad():
             bbox_pred, iou_pred, prob_pred = model(imgs)
         
-        bbox_pred_np = bbox_pred.detach().cpu().numpy()        
-        bbox_mask, prob_mask, iou_mask, target_bbox, target_class, target_iou = \
-            build_target(bbox_pred_np, labels, anchor_scales, 13000)
+            h = bbox_pred.size(1)
+            w = bbox_pred.size(2)
+            bbox_pred_np = bbox_pred.detach().cpu()
+            offset_x = torch.arange(w).view(1, 1, w, 1, 1)
+            offset_y = torch.arange(h).view(1, h, 1, 1, 1)
+            bbox_pred_np[..., 0:1] += offset_x
+            bbox_pred_np[..., 1:2] += offset_y
+            bbox_pred_np[..., 2:3] = torch.exp(bbox_pred_np[..., 2:3])*anchor_scales[:, 0:1]
+            bbox_pred_np[..., 3:4] = torch.exp(bbox_pred_np[..., 3:4])*anchor_scales[:, 1:2]      
+            
+            nGT, nCorrect, bbox_mask, prob_mask, iou_mask, target_bbox, target_class, target_iou = \
+                build_target(bbox_pred_np, labels, anchor_scales, 13000)
         
-        bbox_mask = torch.from_numpy(bbox_mask).cuda()
-        prob_mask = torch.from_numpy(prob_mask).cuda()
-        iou_mask = torch.from_numpy(iou_mask).cuda()            
-        target_bbox = torch.from_numpy(target_bbox).cuda()
-        target_class = torch.from_numpy(target_class).cuda()
-        target_iou = torch.from_numpy(target_iou).cuda()
+            epoch_nCorrect += nCorrect
+            epoch_nGT += nGT
+            bbox_mask = torch.from_numpy(bbox_mask).cuda()
+            prob_mask = torch.from_numpy(prob_mask).cuda()
+            iou_mask = torch.from_numpy(iou_mask).cuda()            
+            target_bbox = torch.from_numpy(target_bbox).cuda()
+            target_class = torch.from_numpy(target_class).cuda()
+            target_iou = torch.from_numpy(target_iou).cuda()
 
-        with torch.no_grad():
             bbox_loss = criterion(bbox_pred*bbox_mask, target_bbox*bbox_mask) / 2.0
             prob_loss = args.prob_obj * criterion(prob_pred*prob_mask, target_class*prob_mask) / 2.0
             iou_loss = criterion(iou_pred*iou_mask, target_iou*iou_mask) / 2.0
-        bbox_loss_avg += bbox_loss.item()
-        prob_loss_avg += prob_loss.item()
-        iou_loss_avg += iou_loss.item()
+            bbox_loss_avg += bbox_loss.item()
+            prob_loss_avg += prob_loss.item()
+            iou_loss_avg += iou_loss.item()
 
-    return bbox_loss_avg/samples, prob_loss_avg/samples, iou_loss_avg/samples
+    return epoch_nGT, epoch_nCorrect, bbox_loss_avg/samples, iou_loss_avg/samples, prob_loss_avg/samples
 
 
 def main():

@@ -33,7 +33,7 @@ parser.add_argument('--num_anchors', type=int, default=5,
 parser.add_argument('--threshold', type=float, default=0.25,
                     help='iou threshold')
 parser.add_argument('--test_dir', type=str, help='path to test dataset')
-parser.add_argument('--batch_size', type=int, default=1,
+parser.add_argument('--batch_size', type=int, default=16,
                     help='batch_size must be 1')
 
 _classes = (
@@ -121,7 +121,7 @@ def test(data_loader, model, anchor_scales):
 def main():
     global args
     args = parser.parse_args()
-    assert args.batch_size == 1
+    # assert args.batch_size == 1
     anchor_scales = map(float, args.anchor_scales.split(','))
     anchor_scales = np.array(list(anchor_scales), dtype=np.float32).reshape(-1, 2)
     anchor_scales = torch.from_numpy(anchor_scales)
@@ -130,7 +130,7 @@ def main():
             [
                 transforms.Resize((416, 416)),
                 transforms.ToTensor(),
-                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
             ])
     test_dataset = VOCdataset('test', args.test_dir, data_transform)
     test_loader = torch.utils.data.DataLoader(test_dataset,
