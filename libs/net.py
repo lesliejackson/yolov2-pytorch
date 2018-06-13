@@ -30,10 +30,10 @@ class Reorg(nn.Module):
         assert(W % stride == 0)
         ws = stride
         hs = stride
-        x = x.view(B, C, H/hs, hs, W/ws, ws).transpose(3,4).contiguous()
-        x = x.view(B, C, H/hs*W/ws, hs*ws).transpose(2,3).contiguous()
-        x = x.view(B, C, hs*ws, H/hs, W/ws).transpose(1,2).contiguous()
-        x = x.view(B, hs*ws*C, H/hs, W/ws)
+        x = x.view(B, C, H//hs, hs, W//ws, ws).transpose(3,4).contiguous()
+        x = x.view(B, C, H//hs*W//ws, hs*ws).transpose(2,3).contiguous()
+        x = x.view(B, C, hs*ws, H//hs, W//ws).transpose(1,2).contiguous()
+        x = x.view(B, hs*ws*C, H//hs, W//ws)
         return x
 
 
@@ -122,29 +122,25 @@ class Darknet_19(nn.Module):
         self.conv5 = Conv2d(oc4,
                             self.num_anchors*(self.num_classes+5),
                             ksize=1)
-        # self.global_average_pool = nn.AvgPool2d((1, 1))
 
     def forward(self, x):
         conv1 = self.conv1s(x)
+        # pdb.set_trace()
         conv2 = self.conv2(conv1)
         conv3 = self.conv3(conv2)
         reorg = self.reorg(conv1)
         cat_conv1_3 = torch.cat([conv3, reorg], 1)
-        conv4 = self.conv4(cat_conv1_3)
+        conv4 = self.conv4(conv3)
         conv5 = self.conv5(conv4)
-        # global_pool = self.global_average_pool(conv5)
         bs, _, h, w = conv5.size()
-        # out = conv5.view(bs, h, w, self.num_anchors, self.num_classes+5)
-        out = conv5.permute(0,2,3,1).contiguous().view(bs, h, w, self.num_anchors, self.num_classes+5)
-        # pdb.set_trace()
-        xy_pred = F.sigmoid(out[:, :, :, :, :2])
-        wh_pred = out[:, :, :, :, 2:4]
-        bbox_pred = torch.cat((xy_pred, wh_pred), -1)
-        iou_pred = F.sigmoid(out[:, :, :, :, 4])
-        score_pred = out[:, :, :, :, 5:].contiguous()
-        prob_pred = F.softmax(score_pred.view(-1, score_pred.size()[-1])).view_as(score_pred)
-
-        return bbox_pred, iou_pred, prob_pred
+        out = conv5.view(bs, self.num_anchors, self.num_classes+5, h, w)
+        x_pred = F.sigmoid(out[:, :, 0, :, :])
+        y_pred = F.sigmoid(out[:, :, 1, :, :])
+        w_pred = out[:, :, 2, :, :]
+        h_pred = out[:, :, 3, :, :]
+        iou_pred = F.sigmoid(out[:, :, 4, :, :])
+        prob_pred = F.softmax(out[:, :, 5:, :, :], dim=2)
+        return x_pred, y_pred, w_pred, h_pred, iou_pred, prob_pred
 
     def load_from_npz(self, fname, num_conv=None):
         dest_src = {'conv.weight': 'kernel', 'conv.bias': 'biases',

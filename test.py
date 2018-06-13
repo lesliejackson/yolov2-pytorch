@@ -5,6 +5,7 @@ import sys
 import numpy as np
 from libs.data import VOCdataset
 from libs.net import Darknet_19
+from libs.tiny_net import TinyYoloNet
 from torchvision import transforms
 from torch.optim.lr_scheduler import StepLR
 from PIL import Image, ImageDraw
@@ -18,11 +19,7 @@ import os
 
 parser = argparse.ArgumentParser(description='PyTorch YOLOv2')
 parser.add_argument('--anchor_scales', type=str,
-                    default=('1.3221,1.73145,'
-                             '3.19275,4.00944,'
-                             '5.05587,8.09892,'
-                             '9.47112,4.84053,'
-                             '11.2364,10.0071'),
+                    default='1.08,1.19,3.42,4.41,6.63,11.38,9.42,5.11,16.62,10.52',
                     help='anchor scales')
 parser.add_argument('--resume', type=str, default=None,
                     help='path to latest checkpoint')
@@ -33,7 +30,7 @@ parser.add_argument('--num_anchors', type=int, default=5,
 parser.add_argument('--threshold', type=float, default=0.25,
                     help='iou threshold')
 parser.add_argument('--test_dir', type=str, help='path to test dataset')
-parser.add_argument('--batch_size', type=int, default=16,
+parser.add_argument('--batch_size', type=int, default=1,
                     help='batch_size must be 1')
 
 _classes = (
@@ -44,22 +41,50 @@ _classes = (
     'sheep', 'sofa', 'train', 'tvmonitor')
 
 
-def transform_center(xy):
-    b, h, w, num_anchors, _ = xy.size()
-    x = xy[..., 0:1]
-    y = xy[..., 1:2]
-    offset_x = torch.arange(w).view(1, 1, w, 1, 1)
-    offset_y = torch.arange(h).view(1, h, 1, 1, 1)
-    x = (x + offset_x)/w
-    y = (y + offset_y)/h
-    return torch.cat([x,y], dim=-1)
+def nms(dets, thresh):
+    x1 = dets[:, 0]
+    y1 = dets[:, 1]
+    x2 = dets[:, 2]
+    y2 = dets[:, 3]
+    scores = dets[:, 4]
+
+    areas = (x2 - x1 + 1) * (y2 - y1 + 1)
+    order = scores.argsort()[::-1]
+
+    keep = []
+    while order.size > 0:
+        i = order[0]
+        keep.append(i)
+        xx1 = np.maximum(x1[i], x1[order[1:]])
+        yy1 = np.maximum(y1[i], y1[order[1:]])
+        xx2 = np.minimum(x2[i], x2[order[1:]])
+        yy2 = np.minimum(y2[i], y2[order[1:]])
+
+        w = np.maximum(0.0, xx2 - xx1 + 1)
+        h = np.maximum(0.0, yy2 - yy1 + 1)
+        inter = w * h
+        ovr = inter / (areas[i] + areas[order[1:]] - inter)
+
+        inds = np.where(ovr <= thresh)[0]
+        order = order[inds + 1]
+
+    return dets[keep]
 
 
-def transform_size(wh, anchor_scales):
-    b, h, w, num_anchors, _ = wh.size()
+def transform_center(x, y):
+    nB, nA, nH, nW = x.size()
+    offset_x = torch.arange(nW).view(1, 1, 1, nW).cuda()
+    offset_y = torch.arange(nH).view(1, 1, nH, 1).cuda()
+    x = (x + offset_x)/nW
+    y = (y + offset_y)/nH
+    return torch.cat([x.view(nB, nA, nH, nW, 1),y.view(nB, nA, nH, nW, 1)], dim=-1)
+
+
+def transform_size(w, h, anchor_scales):
+    nB, nA, nH, nW = w.size()
     return torch.cat([
-                        torch.exp(wh[..., 0:1])*anchor_scales[:, 0:1]/w,
-                        torch.exp(wh[..., 1:2])*anchor_scales[:, 1:2]/h
+                        (torch.exp(w)*anchor_scales[:, 0].view(1, nA, 1, 1).cuda()/nW).view(nB, nA, nH, nW, 1),
+                        (torch.exp(h)*anchor_scales[:, 1].view(1, nA, 1, 1).cuda()/nH).view(nB, nA, nH, nW, 1)
                      ], dim=-1)
 
 
@@ -81,41 +106,46 @@ def test(data_loader, model, anchor_scales):
     for imgs, filename in data_loader:
         imgs = imgs.cuda()
         with torch.no_grad():
-            bbox_pred, iou_pred, prob_pred = model(imgs)
-        bbox_pred = bbox_pred.cpu()
-        xy_transform = transform_center(bbox_pred[..., :2])
-        wh_transform = transform_size(bbox_pred[..., 2:4], anchor_scales)
+            x_pred, y_pred, w_pred, h_pred, iou_pred, prob_pred = model(imgs)
+
+        nB, nA, nH, nW = x_pred.size()
+        xy_transform = transform_center(x_pred, y_pred)
+        wh_transform = transform_size(w_pred, h_pred, anchor_scales)
         bbox_transform = torch.cat([xy_transform, wh_transform], dim=-1)
-        bbox_transform = bbox_transform.numpy()
         bbox_corner = transform_center2corner(bbox_transform)
+        bbox_corner = bbox_corner.cpu().numpy()
         iou_pred = iou_pred.cpu().numpy()
+        prob_pred  = prob_pred.permute(0,1,3,4,2).contiguous().view(nB, nA, nH, nW, args.num_classes)     
         prob_pred = prob_pred.cpu().numpy()
 
         idxs = np.where(iou_pred > args.threshold)
-        import pdb
-        # pdb.set_trace()
         ious = iou_pred[idxs]
+        ious = ious[:, np.newaxis]
         probs = prob_pred[idxs]
         classes = np.argmax(probs, axis=1)
-        # pdb.set_trace()
-        probs = np.amax(probs, axis=1)
-        final_probs = probs * ious
+        classes = classes[:, np.newaxis]
         bboxs = bbox_corner[idxs]
-
         np.clip(bboxs, 0, 1, out=bboxs)
+        bboxs_iou_class = np.concatenate((bboxs, ious, classes), axis=-1)
+
+        bboxs_iou_class_nmsd = nms(bboxs_iou_class, 0.6)
+        nProposals = bboxs_iou_class_nmsd.shape[0]
         img = Image.open(filename[0])
         w, h = img.size
         draw = ImageDraw.Draw(img)
-        for i in range(ious.shape[0]):
-            x0, y0, x1, y1= bboxs[i][0]*w, bboxs[i][1]*h, bboxs[i][2]*w, bboxs[i][3]*h
-            # files[classes[i]].write('{} {} {} {} {} {}\n'.format(
-            #     os.path.basename(filename[0])[:-4], ious[i], x0, y0, x1, y1))
+        for i in range(nProposals):
+            x0 = bboxs_iou_class_nmsd[i][0]*w
+            y0 = bboxs_iou_class_nmsd[i][1]*h
+            x1 = bboxs_iou_class_nmsd[i][2]*w
+            y1 = bboxs_iou_class_nmsd[i][3]*h
+            # files[int(bboxs_iou_class_nmsd[i, 5])].write('{} {} {} {} {} {}\n'.format(
+            #     os.path.basename(filename[0])[:-4], bboxs_iou_class_nmsd[i, 4], x0, y0, x1, y1))
             draw.line([(x0, y0), (x1, y0)], fill='red', width=3)
             draw.line([(x1, y0), (x1, y1)], fill='red', width=3)
             draw.line([(x1, y1), (x0, y1)], fill='red', width=3)
             draw.line([(x0, y1), (x0, y0)], fill='red', width=3)
-            draw.text((x0, y0), reverse_cls_dict[classes[i]], fill='white')
-        img.save('d:\\YOLOV2\\test_results\\{}.jpg'.format(os.path.basename(filename[0])))
+            draw.text((x0, y0), reverse_cls_dict[bboxs_iou_class_nmsd[i, 5]], fill='white')
+        img.save('d:\\YOLOV2\\test_res\\{}.jpg'.format(os.path.basename(filename[0])))
 
 
 def main():
@@ -124,7 +154,7 @@ def main():
     # assert args.batch_size == 1
     anchor_scales = map(float, args.anchor_scales.split(','))
     anchor_scales = np.array(list(anchor_scales), dtype=np.float32).reshape(-1, 2)
-    anchor_scales = torch.from_numpy(anchor_scales)
+    anchor_scales = torch.from_numpy(anchor_scales).cuda()
 
     data_transform = transforms.Compose(
             [
@@ -140,18 +170,21 @@ def main():
                                                pin_memory=True,
                                                drop_last=False)
 
-    darknet = Darknet_19(3, args.num_anchors, args.num_classes)
-    darknet.cuda()
+    tinynet = TinyYoloNet(args.num_anchors, args.num_classes)    
+    tinynet.cuda()
+    tinynet.load_weights('yolov2-tiny-voc.weights')
+    # darknet = Darknet_19(3, args.num_anchors, args.num_classes)
+    # darknet.cuda()
     # darknet.load_net('yolo-voc.weights.h5')
     if args.resume:
         if os.path.isfile(args.resume):
             print("load checkpoint from '{}'".format(args.resume))
             checkpoint = torch.load(args.resume)
-            darknet.load_state_dict(checkpoint['state_dict'])
+            tinynet.load_state_dict(checkpoint['state_dict'])
             print("loaded checkpoint success: '{}'".format(args.resume))
         else:
             print("no checkpoint found at {}".format(args.resume))
-    test(test_loader, darknet, anchor_scales)
+    test(test_loader, tinynet, anchor_scales)
 
 
 if __name__ == '__main__':

@@ -7,6 +7,7 @@ from libs.data import VOCdataset
 from libs.net import Darknet_19
 from torchvision import transforms
 from torch.optim.lr_scheduler import MultiStepLR
+from libs.tiny_net import TinyYoloNet
 
 import torch
 import torch.nn as nn
@@ -14,23 +15,20 @@ import torch.nn.functional as F
 import torch.optim as optim
 import pdb
 import os
+import math
 
 
 parser = argparse.ArgumentParser(description='PyTorch YOLOv2')
 parser.add_argument('--anchor_scales', type=str,
-                    default=('1.3221,1.73145,'
-                             '3.19275,4.00944,'
-                             '5.05587,8.09892,'
-                             '9.47112,4.84053,'
-                             '11.2364,10.0071'),
+                    default='1.08,1.19,3.42,4.41,6.63,11.38,9.42,5.11,16.62,10.52',
                     help='anchor scales')
 parser.add_argument('--resume', type=str, default=None,
                     help='path to latest checkpoint')
 parser.add_argument('--start_epoch', default=0, type=int,
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('--epochs', type=int, default=200,
+parser.add_argument('--epochs', type=int, default=400,
                     help='number of total epochs to run')
-parser.add_argument('--lr', type=float, default=0.00001,
+parser.add_argument('--lr', type=float, default=0.00025,
                     help='base learning rate')
 parser.add_argument('--num_classes', type=int, default=20,
                     help='number of classes')
@@ -38,9 +36,9 @@ parser.add_argument('--num_anchors', type=int, default=5,
                     help='number of anchors per cell')
 parser.add_argument('--weight_decay', type=float, default=0.0005,
                     help='weight of l2 regularize')
-parser.add_argument('--batch_size', type=int, default=25,
+parser.add_argument('--batch_size', type=int, default=16,
                     help='batch size must be 1')
-parser.add_argument('--iou_obj', type=float, default=10.0,
+parser.add_argument('--iou_obj', type=float, default=5.0,
                     help='iou loss weight')
 parser.add_argument('--iou_noobj', type=float, default=1.0,
                     help='iou loss weight')
@@ -48,7 +46,7 @@ parser.add_argument('--coord_obj', type=float, default=1.0,
                     help='coord loss weight with obj')
 parser.add_argument('--prob_obj', type=float, default=1.0,
                     help='prob loss weight with obj')
-parser.add_argument('--coord_noobj', type=float, default=1.0,
+parser.add_argument('--coord_noobj', type=float, default=0.1,
                     help='coord loss weight without obj')
 parser.add_argument('--pretrained_model', type=str, default=None,
                     help='path to pretrained model')
@@ -101,33 +99,38 @@ def iou(bbox1, bbox2):
 
 
 def build_target(bbox_pred, gt, anchor_scales, seen, threshold=0.6):
-    bs, h, w, n, _ = bbox_pred.size()
+    bs, n, h, w, _ = bbox_pred.size()
 
-    target_bbox = np.zeros((bs, h, w, n, 4), dtype=np.float32)
-    prob_mask = np.zeros((bs, h, w, n, 1), dtype=np.float32)
-    iou_mask = np.ones((bs, h, w, n), dtype=np.float32) * np.sqrt(args.iou_noobj)
-    target_iou = np.zeros((bs, h, w, n), dtype=np.float32)
-    bbox_mask  = np.zeros((bs, h, w, n, 1), dtype=np.float32)
-    target_class = np.zeros((bs, h, w, n, args.num_classes), dtype=np.float32)
+    tx = np.zeros((bs, n, h, w), dtype=np.float32)
+    ty = np.zeros((bs, n, h, w), dtype=np.float32)
+    tw = np.zeros((bs, n, h, w), dtype=np.float32)
+    th = np.zeros((bs, n, h, w), dtype=np.float32)
+    prob_mask = np.zeros((bs, n, h, w), dtype=np.float32)
+    iou_mask = np.ones((bs, n, h, w), dtype=np.float32) * np.sqrt(args.iou_noobj)
+    iou_mask_ = np.ones((bs, n, h, w), dtype=np.float32) * np.sqrt(args.iou_noobj)
+    target_iou = np.zeros((bs, n, h, w), dtype=np.float32)
+    bbox_mask  = np.zeros((bs, n, h, w), dtype=np.float32)
+    target_class = np.zeros((bs, n, h, w), dtype=np.float32)
 
-    if seen < 1000:
+    if seen < 3500:
         bbox_mask += np.sqrt(args.coord_noobj)
-        target_bbox[..., 0:2] += 0.5
+        tx.fill(0.5)
+        ty.fill(0.5)
+        tw.fill(0)
+        th.fill(0)
 
     for b in range(bs):
         num_gts = len(gt[b])
         cur_pred = bbox_pred[b]
-        max_ious = np.zeros((h, w, n), dtype=np.float32)
+        max_ious = np.zeros((n, h, w), dtype=np.float32)
         for i in range(num_gts):
             gt_x = (gt[b][i][0]+gt[b][i][2])/2 * w
             gt_y = (gt[b][i][1]+gt[b][i][3])/2 * h
             gt_w = (gt[b][i][2]-gt[b][i][0]) * w
             gt_h = (gt[b][i][3]-gt[b][i][1]) * h
-            # gt_x, gt_y, gt_w, gt_h = gt_x.item(), gt_y.item(), gt_w.item(), gt_h.item()
-            # pdb.set_trace()
             max_ious = np.maximum(max_ious, iou(cur_pred, [gt_x, gt_y, gt_w, gt_h]))
-        iou_mask[b][max_ious > threshold] = 0
-    # pdb.set_trace()
+        iou_mask[b][np.where(max_ious > threshold)] = 0  #dont use iou_mask[b][max_ious > threshold]
+
     nGT = 0
     nCorrect = 0
     for b in range(bs):
@@ -144,42 +147,39 @@ def build_target(bbox_pred, gt, anchor_scales, seen, threshold=0.6):
             for a in range(n):
                 aw = anchor_scales[a][0]
                 ah = anchor_scales[a][1]
-                # pdb.set_trace()
                 cur_iou = iou([0,0,aw,ah], [0,0,gt_w,gt_h])
                 if cur_iou > best_iou:
                     best_iou = cur_iou
                     best_anchor = a
             
-            pred_bbox = list(bbox_pred[b, cell_y, cell_x, best_anchor])
+            pred_bbox = list(bbox_pred[b, best_anchor, cell_y, cell_x])
             gt_bbox = [gt_x, gt_y, gt_w, gt_h]
-            # pdb.set_trace()
-            bbox_mask[b, cell_y, cell_x, best_anchor] = np.sqrt(args.coord_obj)
-            iou_mask[b, cell_y, cell_x, best_anchor] = np.sqrt(args.iou_obj)
-            prob_mask[b, cell_y, cell_x, best_anchor] = 1
+            bbox_mask[b, best_anchor, cell_y, cell_x] = np.sqrt(args.coord_obj)
+            iou_mask[b, best_anchor, cell_y, cell_x] = np.sqrt(args.iou_obj)
+            prob_mask[b, best_anchor, cell_y, cell_x] = 1
 
-            tx, ty = gt_x-cell_x, gt_y-cell_y
-            # pdb.set_trace()
-            tw = np.log(gt_w/anchor_scales[best_anchor][0])
-            th = np.log(gt_h/anchor_scales[best_anchor][1])
-            target_bbox[b, cell_y, cell_x, best_anchor] = tx, ty, tw, th
-            target_class[b, cell_y, cell_x, best_anchor, int(gt[b][i][4])] = 1
+            tx[b, best_anchor, cell_y, cell_x] = gt_x - cell_x
+            ty[b, best_anchor, cell_y, cell_x] = gt_y - cell_y
+            tw[b, best_anchor, cell_y, cell_x] = np.log(gt_w/anchor_scales[best_anchor][0])
+            th[b, best_anchor, cell_y, cell_x] = np.log(gt_h/anchor_scales[best_anchor][1])
+            target_class[b, best_anchor, cell_y, cell_x] = int(gt[b][i][4])
             tiou = iou(pred_bbox, gt_bbox)
-            target_iou[b, cell_y, cell_x, best_anchor] = tiou
+            target_iou[b, best_anchor, cell_y, cell_x] = tiou
+
             if tiou > 0.5:
                 nCorrect += 1
-    return nGT, nCorrect, bbox_mask, prob_mask, iou_mask, target_bbox, target_class, target_iou
+    return nGT, nCorrect, bbox_mask, prob_mask, iou_mask, tx, ty, tw, th, target_class, target_iou
 
 
 def save_fn(state, filename='./yolov2.pth.tar'):
     torch.save(state, filename)
 
 
-def train(train_loader, eval_loader, model, anchor_scales, epochs, opt):
-    lr_scheduler = MultiStepLR(opt, milestones=[70,150], gamma=0.1)
+def train(train_loader, model, anchor_scales, epochs, opt):
+    lr_scheduler = MultiStepLR(opt, milestones=[200,300], gamma=0.1)
     samples = len(train_loader.dataset)
     criterion = nn.MSELoss(size_average=False)
     seen = 0
-    lowest_loss = float('inf')
     for epoch in range(args.start_epoch, epochs):
         lr_scheduler.step(epoch=epoch)
         bbox_loss_avg, prob_loss_avg, iou_loss_avg = 0.0, 0.0, 0.0
@@ -188,102 +188,61 @@ def train(train_loader, eval_loader, model, anchor_scales, epochs, opt):
         for idx, (imgs, labels) in enumerate(train_loader):
             imgs = imgs.cuda()
             opt.zero_grad()
-            # pdb.set_trace()
             with torch.enable_grad():
-                bbox_pred, iou_pred, prob_pred = model(imgs)
+                x_pred, y_pred, w_pred, h_pred, iou_pred, prob_pred = model(imgs)
             
-            h = bbox_pred.size(1)
-            w = bbox_pred.size(2)
-            bbox_pred_np = bbox_pred.detach().cpu()
-            offset_x = torch.arange(w).view(1, 1, w, 1, 1)
-            offset_y = torch.arange(h).view(1, h, 1, 1, 1)
-            # pdb.set_trace()
-            bbox_pred_np[..., 0:1] += offset_x
-            bbox_pred_np[..., 1:2] += offset_y
-            bbox_pred_np[..., 2:3] = torch.exp(bbox_pred_np[..., 2:3])*anchor_scales[:, 0:1]
-            bbox_pred_np[..., 3:4] = torch.exp(bbox_pred_np[..., 3:4])*anchor_scales[:, 1:2]
-            # pdb.set_trace()
+            nB, nA, nH, nW = iou_pred.size()
+            prob_pred = prob_pred.permute(0,1,3,4,2).contiguous().view(nB*nA*nH*nW, args.num_classes)
+
             with torch.no_grad():
-                nGT, nCorrect, bbox_mask, prob_mask, iou_mask, target_bbox, target_class, target_iou = \
-                    build_target(bbox_pred_np, labels, anchor_scales, seen)
-            
-            bbox_mask = torch.from_numpy(bbox_mask).cuda()
-            prob_mask = torch.from_numpy(prob_mask).cuda()
-            iou_mask = torch.from_numpy(iou_mask).cuda()            
-            target_bbox = torch.from_numpy(target_bbox).cuda()
-            target_class = torch.from_numpy(target_class).cuda()
-            target_iou = torch.from_numpy(target_iou).cuda()
+                pred_boxes = torch.cuda.FloatTensor(nB, nA, nH, nW, 4)
+                offset_x = torch.arange(nW).view(1, 1, 1, nW).cuda()
+                offset_y = torch.arange(nH).view(1, 1, nH, 1).cuda()
+                pred_boxes[..., 0] = x_pred + offset_x
+                pred_boxes[..., 1] = y_pred + offset_y
+                pred_boxes[..., 2] = torch.exp(w_pred)*anchor_scales[:, 0].view(1, nA, 1, 1).cuda()
+                pred_boxes[..., 3] = torch.exp(h_pred)*anchor_scales[:, 1].view(1, nA, 1, 1).cuda()
+                
+                pred_boxes = pred_boxes.cpu()
+                anchor_scales = anchor_scales.cpu()
+                nGT, nCorrect, bbox_mask, prob_mask, iou_mask, tx, ty, tw, th, target_class, target_iou = \
+                    build_target(pred_boxes, labels, anchor_scales, seen)
+
+
+                bbox_mask = torch.from_numpy(bbox_mask).cuda()
+                prob_mask = torch.from_numpy(prob_mask).cuda()
+                iou_mask = torch.from_numpy(iou_mask).cuda()            
+                tx = torch.from_numpy(tx).cuda()
+                ty = torch.from_numpy(ty).cuda()
+                tw = torch.from_numpy(tw).cuda()
+                th = torch.from_numpy(th).cuda()
+                target_class = torch.from_numpy(target_class).cuda()
+                target_iou = torch.from_numpy(target_iou).cuda()
+                prob_mask = (prob_mask == 1)
+                target_class = target_class[prob_mask].view(-1).long()
+                prob_mask = prob_mask.view(-1, 1).repeat(1, args.num_classes).cuda()
+                prob_pred = prob_pred[prob_mask].view(-1, args.num_classes)
+                nProposals = torch.sum(iou_pred > 0.25)
 
             with torch.enable_grad():
-                bbox_loss = criterion(bbox_pred*bbox_mask, target_bbox*bbox_mask) / 2.0
-                prob_loss = args.prob_obj * criterion(prob_pred*prob_mask, target_class*prob_mask) / 2.0
+                x_loss = criterion(x_pred*bbox_mask, tx*bbox_mask) / 2.0
+                y_loss = criterion(y_pred*bbox_mask, ty*bbox_mask) / 2.0
+                w_loss = criterion(w_pred*bbox_mask, tw*bbox_mask) / 2.0
+                h_loss = criterion(h_pred*bbox_mask, th*bbox_mask) / 2.0
+                prob_loss = args.prob_obj * nn.CrossEntropyLoss(size_average=False)(prob_pred, target_class) / 2.0
                 iou_loss = criterion(iou_pred*iou_mask, target_iou*iou_mask) / 2.0
-                loss = bbox_loss+prob_loss+iou_loss
+                loss = x_loss + y_loss + w_loss + h_loss + prob_loss + iou_loss
             loss.backward()
             opt.step()
-            # bbox_loss_avg += bbox_loss.item()
-            # prob_loss_avg += prob_loss.item()
-            # iou_loss_avg += iou_loss.item()
             seen += args.batch_size
-        # pdb.set_trace()
 
             if idx % 10 == 0:
-                logger.info('epoch:{} nGT:{} nCorrect:{} bbox loss:{:.4f} iou loss:{:.4f} prob loss:{:.4f}'.format(
-                    epoch, nGT, nCorrect, bbox_loss.item(), iou_loss.item(), prob_loss.item()
+                logger.info('epoch:{} nGT:{} nCorrect:{} nProposals:{} x:{:.4f} y:{:.4f} w:{:.4f} h:{:.4f} iou:{:.4f} cls:{:.4f}'.format(
+                    epoch, nGT, nCorrect, nProposals, x_loss.item(), y_loss.item(), w_loss.item(), h_loss.item(), iou_loss.item(), prob_loss.item()
                 ))
-        e_nGT, e_nCorrect, e_bbox_loss, e_iou_loss, e_prob_loss = evaluation(eval_loader, model, anchor_scales)
-        logger.info('eval nGt:{} nCorrect:{} bbox loss:{:.4f} iou loss:{:.4f} prob loss:{:.4f}'.format(
-            e_nGT, e_nCorrect, e_bbox_loss, e_iou_loss, e_prob_loss
-        ))
-        if e_bbox_loss + e_iou_loss + e_prob_loss < lowest_loss:
-            lowest_loss = e_bbox_loss + e_iou_loss + e_prob_loss
-            save_fn({'epoch': epoch+1,
-                     'state_dict': model.state_dict(),
-                     'optimizer': opt.state_dict()})
-
-
-def evaluation(eval_loader, model, anchor_scales):
-    samples = len(eval_loader)
-    criterion = nn.MSELoss(size_average=False)
-    model.eval()
-    bbox_loss_avg, prob_loss_avg, iou_loss_avg = 0.0, 0.0, 0.0
-
-    epoch_nGT = epoch_nCorrect = 0
-    for idx, (imgs, labels) in enumerate(eval_loader):
-        imgs = imgs.cuda()
-        with torch.no_grad():
-            bbox_pred, iou_pred, prob_pred = model(imgs)
-        
-            h = bbox_pred.size(1)
-            w = bbox_pred.size(2)
-            bbox_pred_np = bbox_pred.detach().cpu()
-            offset_x = torch.arange(w).view(1, 1, w, 1, 1)
-            offset_y = torch.arange(h).view(1, h, 1, 1, 1)
-            bbox_pred_np[..., 0:1] += offset_x
-            bbox_pred_np[..., 1:2] += offset_y
-            bbox_pred_np[..., 2:3] = torch.exp(bbox_pred_np[..., 2:3])*anchor_scales[:, 0:1]
-            bbox_pred_np[..., 3:4] = torch.exp(bbox_pred_np[..., 3:4])*anchor_scales[:, 1:2]      
-            
-            nGT, nCorrect, bbox_mask, prob_mask, iou_mask, target_bbox, target_class, target_iou = \
-                build_target(bbox_pred_np, labels, anchor_scales, 13000)
-        
-            epoch_nCorrect += nCorrect
-            epoch_nGT += nGT
-            bbox_mask = torch.from_numpy(bbox_mask).cuda()
-            prob_mask = torch.from_numpy(prob_mask).cuda()
-            iou_mask = torch.from_numpy(iou_mask).cuda()            
-            target_bbox = torch.from_numpy(target_bbox).cuda()
-            target_class = torch.from_numpy(target_class).cuda()
-            target_iou = torch.from_numpy(target_iou).cuda()
-
-            bbox_loss = criterion(bbox_pred*bbox_mask, target_bbox*bbox_mask) / 2.0
-            prob_loss = args.prob_obj * criterion(prob_pred*prob_mask, target_class*prob_mask) / 2.0
-            iou_loss = criterion(iou_pred*iou_mask, target_iou*iou_mask) / 2.0
-            bbox_loss_avg += bbox_loss.item()
-            prob_loss_avg += prob_loss.item()
-            iou_loss_avg += iou_loss.item()
-
-    return epoch_nGT, epoch_nCorrect, bbox_loss_avg/samples, iou_loss_avg/samples, prob_loss_avg/samples
+        save_fn({'epoch': epoch+1,
+                 'state_dict': model.state_dict(),
+                 'optimizer': opt.state_dict()})
 
 
 def main():
@@ -291,19 +250,12 @@ def main():
     args = parser.parse_args()
     anchor_scales = map(float, args.anchor_scales.split(','))
     anchor_scales = np.array(list(anchor_scales), dtype=np.float32).reshape(-1, 2)
-    anchor_scales = torch.from_numpy(anchor_scales)
+    anchor_scales = torch.from_numpy(anchor_scales).cuda()
 
     train_transform = transforms.Compose(
             [
                 transforms.Resize((416, 416)),
-                # transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=1.5, hue=0.1),
-                transforms.ToTensor(),
-                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
-            ])
-
-    eval_transform = transforms.Compose(
-            [
-                transforms.Resize((416, 416)),
+                transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=1.5, hue=0.1),
                 transforms.ToTensor(),
                 transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
             ])
@@ -316,37 +268,28 @@ def main():
                                                pin_memory=True,
                                                collate_fn=variable_input_collate_fn,
                                                drop_last=True)
-    eval_dataset = VOCdataset(usage='eval', data_dir='eval_data', transform=eval_transform)
-    eval_loader = torch.utils.data.DataLoader(eval_dataset,
-                                              batch_size=args.batch_size,
-                                              shuffle=False,
-                                              num_workers=4,
-                                              pin_memory=True,
-                                              collate_fn=variable_input_collate_fn,
-                                              drop_last=False)
-    darknet = Darknet_19(3, args.num_anchors, args.num_classes)
-    darknet.cuda()
-    optimizer = optim.SGD(darknet.parameters(),
-                          lr=args.lr,
-                          weight_decay=args.weight_decay)
+
+    net = TinyYoloNet(args.num_anchors, args.num_classes)    
+    net.cuda()
+    net.load_weights('yolov2-tiny-voc.weights')
+    optimizer = optim.SGD(net.parameters(),
+                          lr=args.lr/args.batch_size,
+                          weight_decay=args.weight_decay*args.batch_size)
 
     if args.resume:
         if os.path.isfile(args.resume):
             print("load checkpoint from '{}'".format(args.resume))
             checkpoint = torch.load(args.resume)
             args.start_epoch = checkpoint['epoch']
-            darknet.load_state_dict(checkpoint['state_dict'])
+            net.load_state_dict(checkpoint['state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer'])
             print("loaded checkpoint '{}' (epoch {})".format(
                 args.resume, checkpoint['epoch']))
         else:
-            print("no checkpoint found at '{}'".format(args.resume))            
-    else:
-        darknet.load_from_npz(args.pretrained_model, num_conv=18)
-        # pass
+            print("no checkpoint found at '{}'".format(args.resume))
+
     train(train_loader,
-          eval_loader,
-          darknet,
+          net,
           anchor_scales,
           epochs=args.epochs,
           opt=optimizer)
