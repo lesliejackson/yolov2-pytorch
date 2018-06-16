@@ -277,7 +277,8 @@ def main():
     # net = TinyYoloNet(args.num_anchors, args.num_classes)
     net = Darknet_19(args.num_anchors, args.num_classes)       
     net.cuda()
-    net.load_from_npz(args.pretrained_model, num_conv=18)
+    if args.pretrained_model:
+        net.load_from_npz(args.pretrained_model, num_conv=18)
     optimizer = optim.SGD(net.parameters(),
                           lr=args.lr/args.batch_size,
                           weight_decay=args.weight_decay*args.batch_size)
