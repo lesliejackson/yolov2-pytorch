@@ -11,6 +11,13 @@ import torch.utils.data
 import pdb
 
 
+_classes = {'aeroplane': 0, 'bicycle': 1, 'bird': 2, 'boat': 3,
+            'bottle': 4, 'bus': 5, 'car': 6, 'cat': 7, 'chair': 8,
+            'cow': 9, 'diningtable': 10, 'dog': 11, 'horse': 12,
+            'motorbike': 13, 'person': 14, 'pottedplant': 15,
+            'sheep': 16, 'sofa': 17, 'train': 18, 'tvmonitor': 19}
+
+
 def make_dataset(usage, data_dir):
     """
     get data paths
@@ -51,11 +58,7 @@ class VOCdataset(torch.utils.data.Dataset):
         self.jitter = jitter
         self.usage = usage
         self.imgs, self.labels = make_dataset(usage, data_dir)
-        self.classes = {'aeroplane': 0, 'bicycle': 1, 'bird': 2, 'boat': 3,
-                        'bottle': 4, 'bus': 5, 'car': 6, 'cat': 7, 'chair': 8,
-                        'cow': 9, 'diningtable': 10, 'dog': 11, 'horse': 12,
-                        'motorbike': 13, 'person': 14, 'pottedplant': 15,
-                        'sheep': 16, 'sofa': 17, 'train': 18, 'tvmonitor': 19}
+        self.classes = _classes
 
     def __getitem__(self, index):
         img = Image.open(self.imgs[index])
@@ -90,3 +93,25 @@ class VOCdataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.imgs)
+
+
+class VOCdataset_single(torch.utils.data.Dataset):
+    """
+    Pascal VOC dataset
+    """
+    def __init__(self, test_jpg, transform=None):
+        super(VOCdataset_single, self).__init__()
+        self.transform = transform
+        self.img = test_jpg
+        self.classes = _classes
+
+    def __getitem__(self, index):
+        img = Image.open(self.img)
+        
+        if self.transform is not None:
+            img = self.transform(img)
+        
+        return img, self.img
+
+    def __len__(self):
+        return 1
