@@ -99,9 +99,9 @@ def test(data_loader, model, anchor_scales):
     classes_dict = data_loader.dataset.classes
     reverse_cls_dict = {v:k for k,v in classes_dict.items()}
 
-    # files = []
-    # for i in range(20):
-    #     files.append(open('results/{}.txt'.format(reverse_cls_dict[i]), 'w'))
+    files = []
+    for i in range(20):
+        files.append(open('results/{}.txt'.format(reverse_cls_dict[i]), 'w'))
 
     for imgs, filename in data_loader:
         imgs = imgs.cuda()
@@ -138,8 +138,8 @@ def test(data_loader, model, anchor_scales):
             y0 = bboxs_iou_class_nmsd[i][1]*h
             x1 = bboxs_iou_class_nmsd[i][2]*w
             y1 = bboxs_iou_class_nmsd[i][3]*h
-            # files[int(bboxs_iou_class_nmsd[i, 5])].write('{} {} {} {} {} {}\n'.format(
-            #     os.path.basename(filename[0])[:-4], bboxs_iou_class_nmsd[i, 4], x0, y0, x1, y1))
+            files[int(bboxs_iou_class_nmsd[i, 5])].write('{} {} {} {} {} {}\n'.format(
+                os.path.basename(filename[0])[:-4], bboxs_iou_class_nmsd[i, 4], x0, y0, x1, y1))
             draw.line([(x0, y0), (x1, y0)], fill='red', width=3)
             draw.line([(x1, y0), (x1, y1)], fill='red', width=3)
             draw.line([(x1, y1), (x0, y1)], fill='red', width=3)
@@ -162,7 +162,7 @@ def main():
                 transforms.ToTensor(),
                 transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
             ])
-    test_dataset = VOCdataset('test', args.test_dir, data_transform)
+    test_dataset = VOCdataset(usage='test', data_dir=args.test_dir, transform=data_transform)
     test_loader = torch.utils.data.DataLoader(test_dataset,
                                                batch_size=args.batch_size,
                                                shuffle=False,

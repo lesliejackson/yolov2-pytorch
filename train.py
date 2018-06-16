@@ -8,11 +8,13 @@ from libs.net import Darknet_19
 from torchvision import transforms
 from torch.optim.lr_scheduler import MultiStepLR
 from libs.tiny_net import TinyYoloNet
+from libs import utils
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import torchvision.models as models
 import pdb
 import os
 import math
@@ -112,7 +114,7 @@ def build_target(bbox_pred, gt, anchor_scales, seen, threshold=0.6):
     bbox_mask  = np.zeros((bs, n, h, w), dtype=np.float32)
     target_class = np.zeros((bs, n, h, w), dtype=np.float32)
 
-    if seen < 3500:
+    if seen < 12800:
         bbox_mask += np.sqrt(args.coord_noobj)
         tx.fill(0.5)
         ty.fill(0.5)
@@ -171,7 +173,7 @@ def build_target(bbox_pred, gt, anchor_scales, seen, threshold=0.6):
     return nGT, nCorrect, bbox_mask, prob_mask, iou_mask, tx, ty, tw, th, target_class, target_iou
 
 
-def save_fn(state, filename='./yolov2.pth.tar'):
+def save_fn(state, filename='./yolov2_hflip.pth.tar'):
     torch.save(state, filename)
 
 
@@ -240,9 +242,10 @@ def train(train_loader, model, anchor_scales, epochs, opt):
                 logger.info('epoch:{} nGT:{} nCorrect:{} nProposals:{} x:{:.4f} y:{:.4f} w:{:.4f} h:{:.4f} iou:{:.4f} cls:{:.4f}'.format(
                     epoch, nGT, nCorrect, nProposals, x_loss.item(), y_loss.item(), w_loss.item(), h_loss.item(), iou_loss.item(), prob_loss.item()
                 ))
-        save_fn({'epoch': epoch+1,
-                 'state_dict': model.state_dict(),
-                 'optimizer': opt.state_dict()})
+        if epoch % 50 == 0 or epoch == epochs-1:
+            save_fn({'epoch': epoch+1,
+                     'state_dict': model.state_dict(),
+                     'optimizer': opt.state_dict()}, filename='./trained_models/yolov2_darknet19_hflip_crop_{}.pth.tar'.format(epoch))
 
 
 def main():
@@ -251,16 +254,16 @@ def main():
     anchor_scales = map(float, args.anchor_scales.split(','))
     anchor_scales = np.array(list(anchor_scales), dtype=np.float32).reshape(-1, 2)
     anchor_scales = torch.from_numpy(anchor_scales).cuda()
+    torch.backends.cudnn.benchmark = True
 
-    train_transform = transforms.Compose(
-            [
+    train_transform = transforms.Compose([
                 transforms.Resize((416, 416)),
-                transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=1.5, hue=0.1),
+                transforms.ColorJitter(brightness=0.5, saturation=0.5, hue=0.1),
                 transforms.ToTensor(),
                 transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
-            ])
+                      ])
 
-    train_dataset = VOCdataset(usage='train', data_dir='train_data', transform=train_transform)
+    train_dataset = VOCdataset(usage='train', data_dir='i:/VOC2012', jitter=0.2, transform=train_transform)
     train_loader = torch.utils.data.DataLoader(train_dataset,
                                                batch_size=args.batch_size,
                                                shuffle=True,
@@ -269,9 +272,10 @@ def main():
                                                collate_fn=variable_input_collate_fn,
                                                drop_last=True)
 
-    net = TinyYoloNet(args.num_anchors, args.num_classes)    
+    # net = TinyYoloNet(args.num_anchors, args.num_classes)
+    net = Darknet_19(args.num_anchors, args.num_classes)       
     net.cuda()
-    net.load_weights('yolov2-tiny-voc.weights')
+    net.load_from_npz('darknet19.weights.npz', num_conv=18)
     optimizer = optim.SGD(net.parameters(),
                           lr=args.lr/args.batch_size,
                           weight_decay=args.weight_decay*args.batch_size)

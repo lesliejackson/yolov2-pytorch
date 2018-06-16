@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import pdb
+from libs import utils
 
 # class Reorg(nn.Module):
 #     def __init__(self, stride=2):
@@ -96,7 +97,7 @@ def block(in_channels, net_cfg):
 
 
 class Darknet_19(nn.Module):
-    def __init__(self, in_channels, num_anchors, num_classes):
+    def __init__(self, num_anchors, num_classes):
         super(Darknet_19, self).__init__()
         self.num_anchors = num_anchors
         self.num_classes = num_classes
@@ -125,12 +126,11 @@ class Darknet_19(nn.Module):
 
     def forward(self, x):
         conv1 = self.conv1s(x)
-        # pdb.set_trace()
         conv2 = self.conv2(conv1)
         conv3 = self.conv3(conv2)
         reorg = self.reorg(conv1)
         cat_conv1_3 = torch.cat([conv3, reorg], 1)
-        conv4 = self.conv4(conv3)
+        conv4 = self.conv4(cat_conv1_3)
         conv5 = self.conv5(conv4)
         bs, _, h, w = conv5.size()
         out = conv5.view(bs, self.num_anchors, self.num_classes+5, h, w)
@@ -164,3 +164,34 @@ class Darknet_19(nn.Module):
                 if ptype == 'kernel':
                     param = param.permute(3, 2, 0, 1)
                 own_dict[key].copy_(param)
+
+
+    def load_weights(self, fname):
+        buf = np.fromfile(fname, dtype = np.float32)
+        start = 4
+
+        i = 0
+        para_names = self.state_dict().keys()
+        l = len(para_names)
+        while i < l:
+            pdb.set_trace()            
+            if para_names[i].startswith('conv1s'):
+                ind0, ind1 = para_names[i].split('.')[1:3]
+                ind0, ind1 = int(ind0), int(ind1)
+                start = utils.load_conv_bn(buf, start, self._modules['conv1s'][ind0][ind1].conv, self._modules['conv1s'][ind0][ind1].bn)
+                i += 5
+            elif para_names[i].startswith('conv2'):
+                ind = int(para_names[i].split('.')[1])
+                start = utils.load_conv_bn(buf, start, self._modules['conv2'][ind].conv, self._modules['conv2'][ind].bn)
+                i += 5
+            elif para_names[i].startswith('conv3'):
+                ind = int(para_names[i].split('.')[1])
+                start = utils.load_conv_bn(buf, start, self._modules['conv3'][ind].conv, self._modules['conv3'][ind].bn)
+                i += 5
+            elif para_names[i].startswith('conv4'):
+                ind = int(para_names[i].split('.')[1])
+                start = utils.load_conv_bn(buf, start, self._modules['conv4'][ind].conv, self._modules['conv4'][ind].bn)
+                i += 5
+            elif para_names[i].startswith('conv5'):
+                start = utils.load_conv(buf, start, self._modules['conv5'].conv)
+        print('load weight success')

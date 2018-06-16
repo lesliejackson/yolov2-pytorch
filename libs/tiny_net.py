@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch
 from collections import OrderedDict
+from libs import utils
 import pdb
 
 class MaxPoolStride1(nn.Module):
@@ -12,35 +13,6 @@ class MaxPoolStride1(nn.Module):
     def forward(self, x):
         x = F.max_pool2d(F.pad(x, (0,1,0,1), mode='replicate'), 2, stride=1)
         return x
-
-
-def load_conv(buf, start, conv_model):
-    num_w = conv_model.weight.numel()
-    num_b = conv_model.bias.numel()
-    conv_model.weight.requires_grad_(False)
-    conv_model.bias.requires_grad_(False)
-    conv_model.bias.copy_(torch.from_numpy(buf[start:start+num_b]).view_as(conv_model.bias));   start = start + num_b
-    conv_model.weight.copy_(torch.from_numpy(buf[start:start+num_w]).view_as(conv_model.weight)); start = start + num_w
-    conv_model.weight.requires_grad_()
-    conv_model.bias.requires_grad_()
-    return start
-
-
-def load_conv_bn(buf, start, conv_model, bn_model):
-    num_w = conv_model.weight.numel()
-    num_b = bn_model.bias.numel()
-    bn_model.bias.requires_grad_(False)
-    bn_model.weight.requires_grad_(False)
-    conv_model.weight.requires_grad_(False)
-    bn_model.bias.copy_(torch.from_numpy(buf[start:start+num_b]).view_as(bn_model.bias));     start = start + num_b
-    bn_model.weight.copy_(torch.from_numpy(buf[start:start+num_b]).view_as(bn_model.weight));   start = start + num_b
-    bn_model.running_mean.copy_(torch.from_numpy(buf[start:start+num_b]).view_as(bn_model.running_mean));  start = start + num_b
-    bn_model.running_var.copy_(torch.from_numpy(buf[start:start+num_b]).view_as(bn_model.running_var));   start = start + num_b
-    conv_model.weight.copy_(torch.from_numpy(buf[start:start+num_w]).view_as(conv_model.weight)); start = start + num_w
-    bn_model.bias.requires_grad_()
-    bn_model.weight.requires_grad_()
-    conv_model.weight.requires_grad_()
-    return start
 
 
 class TinyYoloNet(nn.Module):
@@ -118,14 +90,14 @@ class TinyYoloNet(nn.Module):
         buf = np.fromfile(path, dtype = np.float32)
         start = 4
         
-        start = load_conv_bn(buf, start, self.cnn[0], self.cnn[1])
-        start = load_conv_bn(buf, start, self.cnn[4], self.cnn[5])
-        start = load_conv_bn(buf, start, self.cnn[8], self.cnn[9])
-        start = load_conv_bn(buf, start, self.cnn[12], self.cnn[13])
-        start = load_conv_bn(buf, start, self.cnn[16], self.cnn[17])
-        start = load_conv_bn(buf, start, self.cnn[20], self.cnn[21])
+        start = utils.load_conv_bn(buf, start, self.cnn[0], self.cnn[1])
+        start = utils.load_conv_bn(buf, start, self.cnn[4], self.cnn[5])
+        start = utils.load_conv_bn(buf, start, self.cnn[8], self.cnn[9])
+        start = utils.load_conv_bn(buf, start, self.cnn[12], self.cnn[13])
+        start = utils.load_conv_bn(buf, start, self.cnn[16], self.cnn[17])
+        start = utils.load_conv_bn(buf, start, self.cnn[20], self.cnn[21])
         
-        start = load_conv_bn(buf, start, self.cnn[24], self.cnn[25])
-        start = load_conv_bn(buf, start, self.cnn[27], self.cnn[28])
-        start = load_conv(buf, start, self.cnn[30])
+        start = utils.load_conv_bn(buf, start, self.cnn[24], self.cnn[25])
+        start = utils.load_conv_bn(buf, start, self.cnn[27], self.cnn[28])
+        start = utils.load_conv(buf, start, self.cnn[30])
 

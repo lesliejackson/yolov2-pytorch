@@ -3,6 +3,7 @@ import xml.etree.cElementTree as ET
 
 import numpy as np
 from PIL import Image
+from libs import utils
 
 import torch
 import torch.utils.data
@@ -22,10 +23,10 @@ def make_dataset(usage, data_dir):
     imgs = []
     if usage in ['train', 'eval']:
         labels = []
-        for rt, dirs, files in os.walk(data_dir + '/JPEGImages_small'):
+        for rt, dirs, files in os.walk(data_dir + '/JPEGImages'):
             for file in files:
                 imgs.append(os.path.join(rt, file))
-        for rt, dirs, files in os.walk(data_dir + '/Annotations_small'):
+        for rt, dirs, files in os.walk(data_dir + '/Annotations'):
             for file in files:
                 labels.append(os.path.join(rt, file))
         imgs.sort(), labels.sort()
@@ -44,9 +45,11 @@ class VOCdataset(torch.utils.data.Dataset):
     """
     Pascal VOC dataset
     """
-    def __init__(self, usage, data_dir, transform=None):
+    def __init__(self, usage, data_dir, jitter=None, transform=None):
         super(VOCdataset, self).__init__()
         self.transform = transform
+        self.jitter = jitter
+        self.usage = usage
         self.imgs, self.labels = make_dataset(usage, data_dir)
         self.classes = {'aeroplane': 0, 'bicycle': 1, 'bird': 2, 'boat': 3,
                         'bottle': 4, 'bus': 5, 'car': 6, 'cat': 7, 'chair': 8,
@@ -56,9 +59,6 @@ class VOCdataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index):
         img = Image.open(self.imgs[index])
-
-        if self.transform is not None:
-            img = self.transform(img)
 
         if self.labels is not None:
             xml_path = self.labels[index]
@@ -76,8 +76,17 @@ class VOCdataset(torch.utils.data.Dataset):
                 ymax = int(float(bndbox.find('ymax').text))/img_height
                 c = self.classes[obj.find('name').text]
                 gt.append([xmin, ymin, xmax, ymax, c])
+            if self.usage == 'train':
+                img, gt = utils.random_horizon_flip(img, gt)
+                img, gt = utils.random_crop(img, gt, self.jitter)
+        
+        if self.transform is not None:
+            img = self.transform(img)
+        
+        if self.labels is not None:
             return img, torch.from_numpy(np.array(gt, dtype=np.float32))
-        return img, self.imgs[index]
+        else:
+            return img, self.imgs[index]
 
     def __len__(self):
         return len(self.imgs)
