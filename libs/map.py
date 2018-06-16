@@ -220,8 +220,8 @@ def _do_python_eval(res_prefix, output_dir = 'output'):
     aps = []
     # The PASCAL VOC metric changed in 2010
     use_07_metric = True
-    if not os.path.isdir(output_dir):
-        os.mkdir(output_dir)
+    # if not os.path.isdir(output_dir):
+    #     os.mkdir(output_dir)
     for i, cls in enumerate(_classes):
         if cls == '__background__':
             continue
@@ -251,4 +251,4 @@ def _do_python_eval(res_prefix, output_dir = 'output'):
 
 if __name__ == '__main__':
     res_prefix = 'd:/YOLOV2/results/'
-    _do_python_eval(res_prefix, output_dir = 'output')
+    _do_python_eval(res_prefix)
