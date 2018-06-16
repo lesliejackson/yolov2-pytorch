@@ -22,15 +22,15 @@ import math
 
 parser = argparse.ArgumentParser(description='PyTorch YOLOv2')
 parser.add_argument('--anchor_scales', type=str,
-                    default='1.08,1.19,3.42,4.41,6.63,11.38,9.42,5.11,16.62,10.52',
+                    default='1.3221,1.73145,3.19275,4.00944,5.05587,8.09892,9.47112,4.84053,11.2364,10.0071',
                     help='anchor scales')
 parser.add_argument('--resume', type=str, default=None,
                     help='path to latest checkpoint')
 parser.add_argument('--start_epoch', default=0, type=int,
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('--epochs', type=int, default=400,
+parser.add_argument('--epochs', type=int, default=350,
                     help='number of total epochs to run')
-parser.add_argument('--lr', type=float, default=0.00025,
+parser.add_argument('--lr', type=float, default=0.001,
                     help='base learning rate')
 parser.add_argument('--num_classes', type=int, default=20,
                     help='number of classes')
@@ -52,6 +52,8 @@ parser.add_argument('--coord_noobj', type=float, default=0.1,
                     help='coord loss weight without obj')
 parser.add_argument('--pretrained_model', type=str, default=None,
                     help='path to pretrained model')
+parser.add_argument('--train_data', type=str, default=None,
+                    help='path to train data')
 
 
 logger = logging.getLogger()
@@ -178,7 +180,7 @@ def save_fn(state, filename='./yolov2_hflip.pth.tar'):
 
 
 def train(train_loader, model, anchor_scales, epochs, opt):
-    lr_scheduler = MultiStepLR(opt, milestones=[200,300], gamma=0.1)
+    lr_scheduler = MultiStepLR(opt, milestones=[155,233], gamma=0.1)
     samples = len(train_loader.dataset)
     criterion = nn.MSELoss(size_average=False)
     seen = 0
@@ -263,7 +265,7 @@ def main():
                 transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
                       ])
 
-    train_dataset = VOCdataset(usage='train', data_dir='i:/VOC2012', jitter=0.2, transform=train_transform)
+    train_dataset = VOCdataset(usage='train', data_dir=args.train_data, jitter=0.2, transform=train_transform)
     train_loader = torch.utils.data.DataLoader(train_dataset,
                                                batch_size=args.batch_size,
                                                shuffle=True,
@@ -275,7 +277,7 @@ def main():
     # net = TinyYoloNet(args.num_anchors, args.num_classes)
     net = Darknet_19(args.num_anchors, args.num_classes)       
     net.cuda()
-    net.load_from_npz('darknet19.weights.npz', num_conv=18)
+    net.load_from_npz(args.pretrained_model, num_conv=18)
     optimizer = optim.SGD(net.parameters(),
                           lr=args.lr/args.batch_size,
                           weight_decay=args.weight_decay*args.batch_size)
