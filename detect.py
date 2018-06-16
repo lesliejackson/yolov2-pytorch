@@ -154,7 +154,7 @@ def main():
 
     tinynet = TinyYoloNet(args.num_anchors, args.num_classes)    
     tinynet.cuda()
-    tinynet.load_weights('yolov2-tiny-voc.weights')
+    # tinynet.load_weights('yolov2-tiny-voc.weights')
     # darknet = Darknet_19(3, args.num_anchors, args.num_classes)
     # darknet.cuda()
     # darknet.load_net('yolo-voc.weights.h5')
